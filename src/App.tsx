@@ -1393,6 +1393,195 @@ function ReservationDetailModal({
 }
 
 // ----------------------------------------------------------------------------------
+// 대한민국 공휴일 (달력 스타일링 전용 - 예약 로직에는 영향 없음)
+// ----------------------------------------------------------------------------------
+// 신정/삼일절/어린이날/현충일/광복절/개천절/한글날/크리스마스는 매년 고정된 양력 날짜라
+// 아래에서 대체공휴일 규정(설날·추석·어린이날·삼일절·광복절·개천절·한글날이 토·일 또는
+// 다른 공휴일과 겹치면 다음 평일을 대체공휴일로 지정)까지 함께 계산한다.
+// 설날 연휴/추석 연휴/부처님오신날은 음력 기준이라 연도마다 날짜가 달라 계산이 불가능하므로
+// 확정된 공식 날짜를 LUNAR_HOLIDAYS에 직접 지정한다 (2024~2026년 확정 기준, 이후 연도는
+// 정부 발표 후 갱신 필요).
+
+interface HolidayEntry {
+  date: string
+  name: string
+}
+
+const FIXED_HOLIDAYS: { month: number; day: number; name: string; substitutable: boolean }[] = [
+  { month: 1, day: 1, name: '신정', substitutable: false },
+  { month: 3, day: 1, name: '삼일절', substitutable: true },
+  { month: 5, day: 5, name: '어린이날', substitutable: true },
+  { month: 6, day: 6, name: '현충일', substitutable: false },
+  { month: 8, day: 15, name: '광복절', substitutable: true },
+  { month: 10, day: 3, name: '개천절', substitutable: true },
+  { month: 10, day: 9, name: '한글날', substitutable: true },
+  { month: 12, day: 25, name: '크리스마스', substitutable: false },
+]
+
+const LUNAR_HOLIDAYS: Record<number, HolidayEntry[]> = {
+  2024: [
+    { date: '2024-02-09', name: '설날 연휴' },
+    { date: '2024-02-10', name: '설날' },
+    { date: '2024-02-11', name: '설날 연휴' },
+    { date: '2024-02-12', name: '대체공휴일' },
+    { date: '2024-05-15', name: '부처님오신날' },
+    { date: '2024-09-16', name: '추석 연휴' },
+    { date: '2024-09-17', name: '추석' },
+    { date: '2024-09-18', name: '추석 연휴' },
+  ],
+  2025: [
+    { date: '2025-01-28', name: '설날 연휴' },
+    { date: '2025-01-29', name: '설날' },
+    { date: '2025-01-30', name: '설날 연휴' },
+    { date: '2025-05-05', name: '부처님오신날' },
+    { date: '2025-05-06', name: '대체공휴일' },
+    { date: '2025-10-05', name: '추석 연휴' },
+    { date: '2025-10-06', name: '추석' },
+    { date: '2025-10-07', name: '추석 연휴' },
+    { date: '2025-10-08', name: '대체공휴일' },
+  ],
+  2026: [
+    { date: '2026-02-16', name: '설날 연휴' },
+    { date: '2026-02-17', name: '설날' },
+    { date: '2026-02-18', name: '설날 연휴' },
+    { date: '2026-05-24', name: '부처님오신날' },
+    { date: '2026-09-24', name: '추석 연휴' },
+    { date: '2026-09-25', name: '추석' },
+    { date: '2026-09-26', name: '추석 연휴' },
+  ],
+}
+
+function buildFixedHolidaysForYear(year: number): HolidayEntry[] {
+  const entries: HolidayEntry[] = []
+  const occupied = new Set<string>((LUNAR_HOLIDAYS[year] ?? []).map((h) => h.date))
+
+  for (const fh of FIXED_HOLIDAYS) {
+    const dateObj = new Date(year, fh.month - 1, fh.day)
+    const dateStr = toDateKey(dateObj)
+    entries.push({ date: dateStr, name: fh.name })
+    occupied.add(dateStr)
+
+    if (fh.substitutable && (dateObj.getDay() === 0 || dateObj.getDay() === 6)) {
+      const sub = new Date(dateObj)
+      do {
+        sub.setDate(sub.getDate() + 1)
+      } while (sub.getDay() === 0 || sub.getDay() === 6 || occupied.has(toDateKey(sub)))
+      const subStr = toDateKey(sub)
+      entries.push({ date: subStr, name: '대체공휴일' })
+      occupied.add(subStr)
+    }
+  }
+  return entries
+}
+
+const HOLIDAY_MAP: Map<string, string[]> = (() => {
+  const map = new Map<string, string[]>()
+  const addEntry = (date: string, name: string) => {
+    const arr = map.get(date) ?? []
+    arr.push(name)
+    map.set(date, arr)
+  }
+  for (let year = 2024; year <= 2027; year++) {
+    for (const h of buildFixedHolidaysForYear(year)) addEntry(h.date, h.name)
+    for (const h of LUNAR_HOLIDAYS[year] ?? []) addEntry(h.date, h.name)
+  }
+  return map
+})()
+
+function getHolidayNames(dateKey: string): string[] {
+  return HOLIDAY_MAP.get(dateKey) ?? []
+}
+
+// ----------------------------------------------------------------------------------
+// 화면 폭 감지 (모바일 미니 달력 vs PC/태블릿 그리드 분기)
+// ----------------------------------------------------------------------------------
+
+function useIsMobile(breakpointPx = 640): boolean {
+  const [isMobile, setIsMobile] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth < breakpointPx,
+  )
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${breakpointPx - 1}px)`)
+    const handler = () => setIsMobile(mq.matches)
+    handler()
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [breakpointPx])
+  return isMobile
+}
+
+// ----------------------------------------------------------------------------------
+// 다중 일자(연속) 예약 - 주 단위 연결 바 계산
+// ----------------------------------------------------------------------------------
+
+const BAR_LANE_HEIGHT = 24
+const BAR_ROW_TOP = 40
+
+function getOccupiedDateRange(r: Reservation): { start: Date; end: Date } {
+  const startRaw = new Date(r.startAt)
+  let endRaw = new Date(r.endAt)
+  // 종료 시각이 정각 자정이면 그 날짜를 실제로 점유하지 않으므로 전날을 마지막 점유일로 본다.
+  if (endRaw.getHours() === 0 && endRaw.getMinutes() === 0 && endRaw.getTime() > startRaw.getTime()) {
+    endRaw = new Date(endRaw.getTime() - 60 * 1000)
+  }
+  const start = new Date(startRaw.getFullYear(), startRaw.getMonth(), startRaw.getDate())
+  const end = new Date(endRaw.getFullYear(), endRaw.getMonth(), endRaw.getDate())
+  return { start, end }
+}
+
+function isMultiDayReservation(r: Reservation): boolean {
+  const { start, end } = getOccupiedDateRange(r)
+  return end.getTime() > start.getTime()
+}
+
+interface BarSegment {
+  reservation: Reservation
+  startCol: number
+  endCol: number
+  isActualStart: boolean
+  isActualEnd: boolean
+  lane: number
+}
+
+function buildWeekBarSegments(weekDays: Date[], reservations: Reservation[]): BarSegment[] {
+  const weekStart = weekDays[0].getTime()
+  const weekEnd = weekDays[6].getTime()
+
+  const segments: BarSegment[] = reservations
+    .filter(isMultiDayReservation)
+    .map((r) => ({ r, ...getOccupiedDateRange(r) }))
+    .filter(({ start, end }) => start.getTime() <= weekEnd && end.getTime() >= weekStart)
+    .map(({ r, start, end }) => {
+      const clampedStartTime = Math.max(start.getTime(), weekStart)
+      const clampedEndTime = Math.min(end.getTime(), weekEnd)
+      const startCol = Math.round((clampedStartTime - weekStart) / 86400000)
+      const endCol = Math.round((clampedEndTime - weekStart) / 86400000)
+      return {
+        reservation: r,
+        startCol,
+        endCol,
+        isActualStart: start.getTime() === clampedStartTime,
+        isActualEnd: end.getTime() === clampedEndTime,
+        lane: 0,
+      }
+    })
+    .sort((a, b) => a.startCol - b.startCol || a.endCol - b.endCol)
+
+  const laneEnds: number[] = []
+  for (const seg of segments) {
+    let laneIndex = laneEnds.findIndex((end) => end < seg.startCol)
+    if (laneIndex === -1) {
+      laneIndex = laneEnds.length
+      laneEnds.push(seg.endCol)
+    } else {
+      laneEnds[laneIndex] = seg.endCol
+    }
+    seg.lane = laneIndex
+  }
+  return segments
+}
+
+// ----------------------------------------------------------------------------------
 // 월간 달력 뷰
 // ----------------------------------------------------------------------------------
 
@@ -1406,17 +1595,24 @@ function CalendarView({
   onChipClick: (reservation: Reservation) => void
 }) {
   const { cameras, getTeamLabel, getCameraById } = useAppData()
+  const isMobile = useIsMobile()
   const today = new Date()
   const [cursor, setCursor] = useState(
     () => new Date(today.getFullYear(), today.getMonth(), 1),
   )
   const [cameraFilter, setCameraFilter] = useState<'전체' | CameraId>('전체')
+  const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null)
 
   const year = cursor.getFullYear()
   const month = cursor.getMonth()
   const todayKey = toDateKey(today)
 
   const gridDays = useMemo(() => getCalendarGridDays(year, month), [year, month])
+  const weeks = useMemo(() => {
+    const result: Date[][] = []
+    for (let i = 0; i < gridDays.length; i += 7) result.push(gridDays.slice(i, i + 7))
+    return result
+  }, [gridDays])
 
   const visibleReservations = useMemo(
     () =>
@@ -1437,6 +1633,25 @@ function CalendarView({
   function goToToday() {
     setCursor(new Date(today.getFullYear(), today.getMonth(), 1))
   }
+
+  function dateNumberColorClass(day: Date, isToday: boolean, isCurrentMonth: boolean): string {
+    if (isToday) return 'text-white'
+    if (!isCurrentMonth) return 'text-slate-300'
+    const dateKey = toDateKey(day)
+    const isHoliday = getHolidayNames(dateKey).length > 0
+    if (day.getDay() === 0 || isHoliday) return 'text-red-500'
+    if (day.getDay() === 6) return 'text-blue-500'
+    return 'text-slate-700'
+  }
+
+  const selectedDayReservations = useMemo(() => {
+    if (!selectedDateKey) return []
+    const [y, m, d] = selectedDateKey.split('-').map(Number)
+    const selectedDate = new Date(y, m - 1, d)
+    return visibleReservations
+      .filter((r) => reservationOverlapsDay(r, selectedDate))
+      .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())
+  }, [selectedDateKey, visibleReservations])
 
   return (
     <div className="space-y-4">
@@ -1508,72 +1723,198 @@ function CalendarView({
           ))}
         </div>
 
-        <div className="grid grid-cols-7">
-          {gridDays.map((day) => {
-            const dateKey = toDateKey(day)
-            const isCurrentMonth = day.getMonth() === month
-            const isToday = dateKey === todayKey
-            const dayReservations = visibleReservations.filter((r) =>
-              reservationOverlapsDay(r, day),
-            )
+        {weeks.map((week, weekIndex) => {
+          const segments = isMobile ? [] : buildWeekBarSegments(week, visibleReservations)
+          const maxLanes = segments.length > 0 ? Math.max(...segments.map((s) => s.lane)) + 1 : 0
+          const barsHeight = maxLanes * BAR_LANE_HEIGHT
 
-            return (
-              <div
-                key={dateKey}
-                onClick={() => onDayClick(dateKey)}
-                className={`min-h-[132px] cursor-pointer border-b border-r border-slate-100 p-2 transition hover:bg-slate-50 sm:min-h-[168px] ${
-                  isCurrentMonth ? 'bg-white' : 'bg-slate-50/60'
-                }`}
-              >
-                <span
-                  className={`inline-flex h-9 w-9 items-center justify-center rounded-full text-lg font-bold ${
-                    isToday
-                      ? 'text-white'
-                      : isCurrentMonth
-                        ? 'text-slate-700'
-                        : 'text-slate-300'
-                  }`}
-                  style={isToday ? { backgroundColor: TOSS_BLUE } : undefined}
+          return (
+            <div key={weekIndex} className="relative grid grid-cols-7">
+              {week.map((day) => {
+                const dateKey = toDateKey(day)
+                const isCurrentMonth = day.getMonth() === month
+                const isToday = dateKey === todayKey
+                const holidayNames = getHolidayNames(dateKey)
+                const isSelected = selectedDateKey === dateKey
+
+                const dayReservations = isMobile
+                  ? visibleReservations.filter((r) => reservationOverlapsDay(r, day))
+                  : visibleReservations.filter(
+                      (r) => reservationOverlapsDay(r, day) && !isMultiDayReservation(r),
+                    )
+
+                const dotTeams = isMobile
+                  ? Array.from(new Set(dayReservations.map((r) => r.teamId))).map(getTeam)
+                  : []
+
+                return (
+                  <div
+                    key={dateKey}
+                    onClick={() =>
+                      isMobile
+                        ? setSelectedDateKey((prev) => (prev === dateKey ? null : dateKey))
+                        : onDayClick(dateKey)
+                    }
+                    className={`min-h-16 cursor-pointer border-b border-r border-slate-100 p-2 transition hover:bg-slate-50 sm:min-h-[132px] sm:p-2 md:min-h-[168px] ${
+                      isCurrentMonth ? 'bg-white' : 'bg-slate-50/60'
+                    } ${isSelected ? 'ring-2 ring-inset ring-[#3182f6]' : ''}`}
+                  >
+                    <div className="flex items-center gap-1">
+                      <span
+                        className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-base font-bold sm:h-9 sm:w-9 sm:text-lg ${dateNumberColorClass(day, isToday, isCurrentMonth)}`}
+                        style={isToday ? { backgroundColor: TOSS_BLUE } : undefined}
+                      >
+                        {day.getDate()}
+                      </span>
+                      {!isMobile && holidayNames.length > 0 && (
+                        <span className="truncate text-[10px] font-bold text-red-500 sm:text-xs">
+                          {holidayNames[0]}
+                        </span>
+                      )}
+                    </div>
+
+                    {isMobile ? (
+                      dotTeams.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {dotTeams.slice(0, 4).map((t) => (
+                            <span key={t.id} className={`h-2 w-2 rounded-full ${t.color}`} />
+                          ))}
+                          {dotTeams.length > 4 && (
+                            <span className="text-[10px] font-bold text-slate-400">
+                              +{dotTeams.length - 4}
+                            </span>
+                          )}
+                        </div>
+                      )
+                    ) : (
+                      <>
+                        {barsHeight > 0 && <div style={{ height: barsHeight }} />}
+                        <div className="mt-1.5 max-h-[94px] space-y-1.5 overflow-y-auto pr-0.5 sm:max-h-[124px]">
+                          {dayReservations.map((r) => {
+                            const team = getTeam(r.teamId)
+                            const teamLabel = getTeamLabel(r.teamId)
+                            const camLabel = getCameraById(r.cameraId).model
+                            return (
+                              <button
+                                key={r.id}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  onChipClick(r)
+                                }}
+                                title={`[${teamLabel}] ${camLabel} (${formatTimeOnly(r.startAt)}~${formatTimeOnly(r.endAt)})${
+                                  r.isBroadcast ? ' · 방송국' : ''
+                                }`}
+                                className={`flex w-full items-center gap-1 truncate rounded-lg px-1.5 py-1 text-left text-xs font-bold text-white sm:text-sm ${team.color} hover:opacity-90`}
+                              >
+                                <span className="truncate">
+                                  [{teamLabel}] {camLabel} ({formatTimeOnly(r.startAt)}~
+                                  {formatTimeOnly(r.endAt)})
+                                </span>
+                                {r.isBroadcast && (
+                                  <span className="flex shrink-0 items-center gap-0.5 rounded bg-white/25 px-1 py-0.5 text-[9px] font-bold">
+                                    <Radio size={9} />
+                                    방송국
+                                  </span>
+                                )}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )
+              })}
+
+              {!isMobile && maxLanes > 0 && (
+                <div
+                  className="pointer-events-none absolute inset-x-0"
+                  style={{ top: BAR_ROW_TOP }}
                 >
-                  {day.getDate()}
-                </span>
-
-                <div className="mt-1.5 max-h-[94px] space-y-1.5 overflow-y-auto pr-0.5 sm:max-h-[124px]">
-                  {dayReservations.map((r) => {
-                    const team = getTeam(r.teamId)
-                    const teamLabel = getTeamLabel(r.teamId)
-                    const camLabel = getCameraById(r.cameraId).model
+                  {segments.map((seg) => {
+                    const team = getTeam(seg.reservation.teamId)
+                    const teamLabel = getTeamLabel(seg.reservation.teamId)
+                    const camLabel = getCameraById(seg.reservation.cameraId).model
                     return (
                       <button
-                        key={r.id}
+                        key={seg.reservation.id}
                         onClick={(e) => {
                           e.stopPropagation()
-                          onChipClick(r)
+                          onChipClick(seg.reservation)
                         }}
-                        title={`[${teamLabel}] ${camLabel} (${formatTimeOnly(r.startAt)}~${formatTimeOnly(r.endAt)})${
-                          r.isBroadcast ? ' · 방송국' : ''
+                        title={`[${teamLabel}] ${camLabel} (${formatDateTime(seg.reservation.startAt)} ~ ${formatDateTime(seg.reservation.endAt)})${
+                          seg.reservation.isBroadcast ? ' · 방송국' : ''
                         }`}
-                        className={`flex w-full items-center gap-1 truncate rounded-lg px-1.5 py-1 text-left text-xs font-bold text-white sm:text-sm ${team.color} hover:opacity-90`}
+                        className={`pointer-events-auto absolute flex items-center overflow-hidden text-xs font-bold text-white sm:text-sm ${team.color} ${
+                          seg.isActualStart ? 'rounded-l-lg pl-1.5' : ''
+                        } ${seg.isActualEnd ? 'rounded-r-lg' : ''} hover:opacity-90`}
+                        style={{
+                          left: `${(seg.startCol / 7) * 100}%`,
+                          width: `${((seg.endCol - seg.startCol + 1) / 7) * 100}%`,
+                          top: seg.lane * BAR_LANE_HEIGHT,
+                          height: BAR_LANE_HEIGHT - 4,
+                        }}
                       >
-                        <span className="truncate">
-                          [{teamLabel}] {camLabel} ({formatTimeOnly(r.startAt)}~
-                          {formatTimeOnly(r.endAt)})
-                        </span>
-                        {r.isBroadcast && (
-                          <span className="flex shrink-0 items-center gap-0.5 rounded bg-white/25 px-1 py-0.5 text-[9px] font-bold">
-                            <Radio size={9} />
-                            방송국
+                        {seg.isActualStart && (
+                          <span className="truncate">
+                            [{teamLabel}] {camLabel}
                           </span>
                         )}
                       </button>
                     )
                   })}
                 </div>
-              </div>
-            )
-          })}
-        </div>
+              )}
+            </div>
+          )
+        })}
       </div>
+
+      {isMobile && (
+        <div className={`space-y-3 p-4 ${CARD}`}>
+          {selectedDateKey ? (
+            <>
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-extrabold text-slate-800">
+                  {selectedDateKey.slice(5).replace('-', '월 ')}일
+                  {getHolidayNames(selectedDateKey).length > 0 && (
+                    <span className="ml-2 text-sm font-bold text-red-500">
+                      {getHolidayNames(selectedDateKey).join(' · ')}
+                    </span>
+                  )}
+                </h3>
+                <button
+                  onClick={() => onDayClick(selectedDateKey)}
+                  className="flex h-10 items-center gap-1 rounded-xl bg-[#3182f6] px-3.5 text-sm font-bold text-white"
+                >
+                  <Plus size={15} />
+                  새 예약
+                </button>
+              </div>
+              {selectedDayReservations.length === 0 ? (
+                <p className="py-6 text-center text-base text-slate-400">
+                  이 날짜에 등록된 예약이 없습니다.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {selectedDayReservations.map((r) => (
+                    <ReservationRow
+                      key={r.id}
+                      reservation={r}
+                      showCamera
+                      onClick={() => onChipClick(r)}
+                    />
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="py-6 text-center text-base text-slate-400">
+              날짜를 선택하면 예약 상세 목록이 여기에 표시됩니다.
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-3 px-1 text-sm font-medium text-slate-500">
         {TEAMS.map((t) => (
