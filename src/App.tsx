@@ -294,8 +294,11 @@ function toLocalInputValue(d: Date): string {
   return copy.toISOString().slice(0, 16)
 }
 
+// 예약 폼 기본값은 초 단위 현재 시각까지 정밀할 필요가 없으므로 5분 단위로 내림한다.
 function nowLocalInput(offsetHours = 0): string {
-  return toLocalInputValue(new Date(Date.now() + offsetHours * 60 * 60 * 1000))
+  const d = new Date(Date.now() + offsetHours * 60 * 60 * 1000)
+  d.setMinutes(Math.floor(d.getMinutes() / 5) * 5, 0, 0)
+  return toLocalInputValue(d)
 }
 
 // "yyyy-MM-ddTHH:mm" 문자열을 날짜/시/분으로 분리 (커스텀 시간 선택 UI용)
@@ -310,7 +313,7 @@ function combineDateTime(date: string, hour: string, minute: string): string {
 }
 
 const HOUR_OPTIONS = Array.from({ length: 24 }, (_, h) => `${h}`.padStart(2, '0'))
-const MINUTE_OPTIONS = ['00', '10', '20', '30', '40', '50']
+const MINUTE_OPTIONS = Array.from({ length: 12 }, (_, m) => `${m * 5}`.padStart(2, '0'))
 const QUICK_DURATION_HOURS = [1, 2, 3]
 
 // ----------------------------------------------------------------------------------
@@ -808,7 +811,7 @@ function DateTimePicker({
   onChange: (value: string) => void
 }) {
   const { date, hour, minute } = splitDateTime(value)
-  // 기존 데이터(또는 현재 시각)의 분이 10분 단위가 아닐 수 있으므로, 드롭다운에 없으면 임시로 추가해 값이 사라지지 않게 한다.
+  // 기존 데이터의 분이 5분 단위가 아닐 수 있으므로(과거 datetime-local 입력값 등), 드롭다운에 없으면 임시로 추가해 값이 사라지지 않게 한다.
   const minuteOptions = MINUTE_OPTIONS.includes(minute)
     ? MINUTE_OPTIONS
     : [...MINUTE_OPTIONS, minute].sort()
@@ -1496,7 +1499,7 @@ function CalendarView({
           {WEEKDAY_LABELS.map((w, i) => (
             <div
               key={w}
-              className={`px-2 py-2.5 text-center text-sm font-bold ${
+              className={`px-2 py-3 text-center text-base font-bold ${
                 i === 0 ? 'text-red-500' : i === 6 ? 'text-blue-500' : 'text-slate-500'
               }`}
             >
@@ -1518,12 +1521,12 @@ function CalendarView({
               <div
                 key={dateKey}
                 onClick={() => onDayClick(dateKey)}
-                className={`min-h-[112px] cursor-pointer border-b border-r border-slate-100 p-1.5 transition hover:bg-slate-50 sm:min-h-[132px] ${
+                className={`min-h-[132px] cursor-pointer border-b border-r border-slate-100 p-2 transition hover:bg-slate-50 sm:min-h-[168px] ${
                   isCurrentMonth ? 'bg-white' : 'bg-slate-50/60'
                 }`}
               >
                 <span
-                  className={`inline-flex h-8 w-8 items-center justify-center rounded-full text-base font-bold ${
+                  className={`inline-flex h-9 w-9 items-center justify-center rounded-full text-lg font-bold ${
                     isToday
                       ? 'text-white'
                       : isCurrentMonth
@@ -1535,7 +1538,7 @@ function CalendarView({
                   {day.getDate()}
                 </span>
 
-                <div className="mt-1 max-h-[78px] space-y-1 overflow-y-auto pr-0.5 sm:max-h-[92px]">
+                <div className="mt-1.5 max-h-[94px] space-y-1.5 overflow-y-auto pr-0.5 sm:max-h-[124px]">
                   {dayReservations.map((r) => {
                     const team = getTeam(r.teamId)
                     const teamLabel = getTeamLabel(r.teamId)
@@ -2511,7 +2514,7 @@ export default function App() {
     <AppDataContext.Provider value={appDataValue}>
       <div className="min-h-screen" style={{ backgroundColor: TOSS_BG }}>
         <header className="border-b border-slate-200/70 bg-white">
-          <div className="mx-auto flex max-w-4xl flex-wrap items-center gap-3 px-4 py-5">
+          <div className="mx-auto flex max-w-5xl flex-wrap items-center gap-3 px-4 py-5">
             <div className="flex items-center gap-2.5">
               <div className="rounded-2xl p-2.5 text-white" style={{ backgroundColor: TOSS_BLUE }}>
                 <Camera size={22} />
@@ -2553,7 +2556,7 @@ export default function App() {
           </div>
         </header>
 
-        <main className="mx-auto max-w-4xl px-4 py-6">
+        <main className="mx-auto max-w-5xl px-4 py-6">
           <div className={`mb-5 flex gap-1.5 p-1.5 ${CARD}`}>
             <button
               onClick={() => setTab('calendar')}
