@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js'
 import {
   Camera,
   CalendarDays,
@@ -25,16 +26,39 @@ import {
   Package,
   Tag,
   ShieldCheck,
+  Cloud,
+  CloudOff,
 } from 'lucide-react'
+import {
+  DEFAULT_ACCESSORIES,
+  DEFAULT_CAMERAS,
+  DEFAULT_TEAM_NAMES,
+  type AccessoryId,
+  type AccessoryItem,
+  type CameraId,
+  type CameraInfo,
+  type Reservation,
+  type ReservationStatus,
+  type TeamId,
+} from './lib/types'
+import { isSupabaseConfigured } from './lib/supabase'
+import {
+  fetchAllCloudData,
+  persistAccessory,
+  persistCamera,
+  persistReservation,
+  persistTeamName,
+  deleteAccessoryRemote,
+  deleteCameraRemote,
+  rowToReservation,
+  subscribeToCloudChanges,
+  type ReservationRow,
+  type TeamNameRow,
+} from './lib/cloudSync'
 
 // ----------------------------------------------------------------------------------
-// 타입 정의
+// 타입 정의 (UI 전용 - 도메인 타입은 ./lib/types 참고)
 // ----------------------------------------------------------------------------------
-
-type TeamId = '1조' | '2조' | '3조' | '4조' | '5조'
-type CameraId = string
-type AccessoryId = string
-type ReservationStatus = '대여중' | '반납완료' | '취소됨'
 
 interface Team {
   id: TeamId
@@ -46,35 +70,11 @@ interface Team {
   ring: string
 }
 
-interface CameraInfo {
-  id: CameraId
-  label: string
-  model: string
-}
-
-interface AccessoryItem {
-  id: AccessoryId
-  category: string
-  label: string
-}
-
-interface Reservation {
-  id: string
-  teamId: TeamId
-  cameraId: CameraId
-  accessories: AccessoryId[]
-  isBroadcast: boolean
-  startAt: string
-  endAt: string
-  purpose: string
-  status: ReservationStatus
-  createdAt: string
-  returnedAt?: string
-}
-
 type ReservationModalState =
   | { mode: 'create'; presetDate?: string; presetCameraId?: CameraId }
   | { mode: 'edit'; reservation: Reservation }
+
+type CloudStatus = 'checking' | 'online' | 'offline'
 
 // ----------------------------------------------------------------------------------
 // 상수 데이터
@@ -132,30 +132,7 @@ const TEAMS: Team[] = [
   },
 ]
 
-const DEFAULT_CAMERAS: CameraInfo[] = [
-  { id: 'A', label: 'Camera A', model: 'Sony FX3' },
-  { id: 'B', label: 'Camera B', model: 'Canon R6 Mark II' },
-  { id: 'C', label: 'Camera C', model: 'Lumix S5II' },
-]
-
-const DEFAULT_TEAM_NAMES: Record<TeamId, string> = {
-  '1조': '1조',
-  '2조': '2조',
-  '3조': '3조',
-  '4조': '4조',
-  '5조': '5조',
-}
-
 const WEEKDAY_LABELS = ['일', '월', '화', '수', '목', '금', '토']
-
-const DEFAULT_ACCESSORIES: AccessoryItem[] = [
-  { id: 'sd-01', category: 'SD카드', label: 'SD-01' },
-  { id: 'sd-02', category: 'SD카드', label: 'SD-02' },
-  { id: 'bat-01', category: '배터리', label: 'BAT-01' },
-  { id: 'bat-02', category: '배터리', label: 'BAT-02' },
-  { id: 'mic-1', category: '무선 마이크', label: 'MIC-1' },
-  { id: 'tri-01', category: '삼각대', label: 'TRI-01' },
-]
 
 const STORAGE_KEY = 'camera-reservation-data-v3'
 const TEAM_NAMES_STORAGE_KEY = 'camera-team-names-v1'
@@ -205,6 +182,27 @@ function generateId(): string {
 
 function formatAccessory(item: AccessoryItem): string {
   return `${item.category} (${item.label})`
+}
+
+function groupAccessoriesByCategory(
+  items: AccessoryItem[],
+): { category: string; items: AccessoryItem[] }[] {
+  const map = new Map<string, AccessoryItem[]>()
+  for (const item of items) {
+    if (!map.has(item.category)) map.set(item.category, [])
+    map.get(item.category)!.push(item)
+  }
+  return Array.from(map.entries()).map(([category, categoryItems]) => ({
+    category,
+    items: categoryItems,
+  }))
+}
+
+function getAccessoryIcon(category: string) {
+  if (category.includes('배터리')) return Battery
+  if (category.includes('마이크')) return Mic
+  if (category.includes('조명')) return Lightbulb
+  return Package
 }
 
 function findCameraConflict(
@@ -295,7 +293,7 @@ function nowLocalInput(offsetHours = 0): string {
 }
 
 // ----------------------------------------------------------------------------------
-// 더미 데이터
+// 더미 데이터 (localStorage 전용 모드에서만 사용)
 // ----------------------------------------------------------------------------------
 
 function buildDummyData(): Reservation[] {
@@ -513,6 +511,30 @@ function BroadcastBadge() {
   )
 }
 
+function CloudStatusBadge({ status }: { status: CloudStatus }) {
+  if (status === 'checking') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-400">
+        연결 확인 중...
+      </span>
+    )
+  }
+  if (status === 'online') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-600">
+        <Cloud size={12} />
+        실시간 동기화 중
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-600">
+      <CloudOff size={12} />
+      오프라인 (이 브라우저에만 저장)
+    </span>
+  )
+}
+
 function Modal({
   title,
   onClose,
@@ -651,6 +673,107 @@ function MyTeamSwitcher({
 }
 
 // ----------------------------------------------------------------------------------
+// 부가 장비 - 품목별 아코디언 + 라벨 칩 선택 UI (예약 폼에서 사용)
+// ----------------------------------------------------------------------------------
+
+function AccessoryPickerAccordion({
+  availableAccessories,
+  selected,
+  reservations,
+  startAt,
+  endAt,
+  hasValidRange,
+  excludeId,
+  onToggle,
+}: {
+  availableAccessories: AccessoryItem[]
+  selected: AccessoryId[]
+  reservations: Reservation[]
+  startAt: string
+  endAt: string
+  hasValidRange: boolean
+  excludeId?: string
+  onToggle: (id: AccessoryId) => void
+}) {
+  const { getTeamLabel } = useAppData()
+  const groups = useMemo(
+    () => groupAccessoriesByCategory(availableAccessories),
+    [availableAccessories],
+  )
+
+  if (groups.length === 0) {
+    return <p className="text-sm text-slate-400">등록된 부속 기자재가 없습니다.</p>
+  }
+
+  return (
+    <div className="space-y-2">
+      {groups.map(({ category, items }) => {
+        const Icon = getAccessoryIcon(category)
+        const selectedCount = items.filter((i) => selected.includes(i.id)).length
+        return (
+          <details
+            key={category}
+            className="group overflow-hidden rounded-xl border border-slate-200"
+            open
+          >
+            <summary className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-3 text-base font-bold text-slate-700 [&::-webkit-details-marker]:hidden">
+              <Icon size={16} className="text-slate-500" />
+              {category}
+              {selectedCount > 0 && (
+                <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-bold text-[#3182f6]">
+                  {selectedCount}개 선택
+                </span>
+              )}
+              <ChevronDown
+                size={16}
+                className="ml-auto shrink-0 text-slate-400 transition group-open:rotate-180"
+              />
+            </summary>
+            <div className="flex flex-wrap gap-2 border-t border-slate-100 px-3.5 py-3">
+              {items.map((item) => {
+                const checked = selected.includes(item.id)
+                const conflict = hasValidRange
+                  ? findAccessoryConflict(reservations, item.id, startAt, endAt, excludeId)
+                  : undefined
+                const disabled = !!conflict && !checked
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => onToggle(item.id)}
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm font-bold transition ${
+                      disabled
+                        ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-300'
+                        : checked
+                          ? 'border-[#3182f6] bg-[#3182f6] text-white'
+                          : 'border-slate-200 text-slate-600 hover:border-slate-300'
+                    }`}
+                    title={
+                      disabled && conflict
+                        ? `${getTeamLabel(conflict.teamId)} 예약중 (${formatDateTime(conflict.startAt)} ~ ${formatDateTime(conflict.endAt)})`
+                        : undefined
+                    }
+                  >
+                    <Tag size={12} />
+                    {item.label}
+                    {disabled && conflict && (
+                      <span className="text-[10px] font-semibold text-red-400">
+                        {getTeamLabel(conflict.teamId)} 예약중
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+          </details>
+        )
+      })}
+    </div>
+  )
+}
+
+// ----------------------------------------------------------------------------------
 // 예약 등록 / 변경 모달
 // ----------------------------------------------------------------------------------
 
@@ -669,12 +792,8 @@ function ReservationModal({
 }) {
   const isEdit = state.mode === 'edit'
   const existing = isEdit ? state.reservation : undefined
-  const {
-    cameras,
-    accessories: availableAccessories,
-    getTeamLabel,
-    getCameraById,
-  } = useAppData()
+  const { cameras, accessories: availableAccessories, getTeamLabel, getCameraById } =
+    useAppData()
 
   const [teamId, setTeamId] = useState<TeamId>(existing?.teamId ?? myTeam)
   const [cameraId, setCameraId] = useState<CameraId>(
@@ -849,56 +968,18 @@ function ReservationModal({
 
         <div>
           <label className="mb-2 block text-base font-bold text-slate-700">
-            부속 기자재 (라벨 번호 단위 다중 선택)
+            부속 기자재 (품목별 아코디언 · 라벨 번호 단위 다중 선택)
           </label>
-          {availableAccessories.length === 0 ? (
-            <p className="text-sm text-slate-400">등록된 부속 기자재가 없습니다.</p>
-          ) : (
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {availableAccessories.map((item) => {
-                const checked = accessories.includes(item.id)
-                const conflict = hasValidRange
-                  ? findAccessoryConflict(
-                      reservations,
-                      item.id,
-                      startAt,
-                      endAt,
-                      excludeId,
-                    )
-                  : undefined
-                const disabled = !!conflict && !checked
-                return (
-                  <label
-                    key={item.id}
-                    className={`flex items-center gap-2 rounded-xl border px-3.5 py-2.5 text-base transition ${
-                      disabled
-                        ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-300'
-                        : checked
-                          ? 'cursor-pointer border-[#3182f6] bg-blue-50 text-[#3182f6]'
-                          : 'cursor-pointer border-slate-200 text-slate-600 hover:border-slate-300'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      disabled={disabled}
-                      onChange={() => toggleAccessory(item.id)}
-                      className="h-4 w-4 rounded accent-[#3182f6]"
-                    />
-                    <span className="flex items-center gap-1">
-                      <Tag size={13} />
-                      {formatAccessory(item)}
-                    </span>
-                    {disabled && conflict && (
-                      <span className="ml-auto text-xs font-bold text-red-400">
-                        {getTeamLabel(conflict.teamId)} 예약중
-                      </span>
-                    )}
-                  </label>
-                )
-              })}
-            </div>
-          )}
+          <AccessoryPickerAccordion
+            availableAccessories={availableAccessories}
+            selected={accessories}
+            reservations={reservations}
+            startAt={startAt}
+            endAt={endAt}
+            hasValidRange={hasValidRange}
+            excludeId={excludeId}
+            onToggle={toggleAccessory}
+          />
         </div>
 
         <div>
@@ -1499,13 +1580,6 @@ function ReservationRow({
 // 장비별 현황 뷰
 // ----------------------------------------------------------------------------------
 
-function getAccessoryIcon(category: string) {
-  if (category.includes('배터리')) return Battery
-  if (category.includes('마이크')) return Mic
-  if (category.includes('조명')) return Lightbulb
-  return Package
-}
-
 function EquipmentStatusView({
   reservations,
   onSelect,
@@ -1515,6 +1589,10 @@ function EquipmentStatusView({
 }) {
   const { cameras, accessories } = useAppData()
   const now = Date.now()
+  const accessoryGroups = useMemo(
+    () => groupAccessoriesByCategory(accessories),
+    [accessories],
+  )
 
   return (
     <div className="space-y-8">
@@ -1587,71 +1665,94 @@ function EquipmentStatusView({
       <div className="space-y-4">
         <h2 className="flex items-center gap-1.5 text-xl font-extrabold text-slate-800">
           <Package size={18} />
-          부가 장비 (라벨 번호)
+          부가 장비 (품목별 아코디언 · 라벨 번호)
         </h2>
-        {accessories.length === 0 && (
+        {accessoryGroups.length === 0 && (
           <div className={`flex flex-col items-center justify-center py-16 text-slate-400 ${CARD}`}>
             <Package size={36} className="mb-2" />
             <p className="text-base">등록된 부가 장비가 없습니다. 관리자 설정에서 추가해주세요.</p>
           </div>
         )}
-        {accessories.map((item) => {
-          const Icon = getAccessoryIcon(item.category)
-          const history = reservations
-            .filter((r) => r.accessories.includes(item.id) && r.status !== '취소됨')
-            .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())
-          const inUse = history.some(
-            (r) =>
-              r.status === '대여중' &&
-              new Date(r.startAt).getTime() <= now &&
-              new Date(r.endAt).getTime() >= now,
-          )
+        {accessoryGroups.map(({ category, items }) => {
+          const Icon = getAccessoryIcon(category)
+          const availableCount = items.filter((item) => {
+            const history = reservations.filter(
+              (r) => r.accessories.includes(item.id) && r.status !== '취소됨',
+            )
+            return !history.some(
+              (r) =>
+                r.status === '대여중' &&
+                new Date(r.startAt).getTime() <= now &&
+                new Date(r.endAt).getTime() >= now,
+            )
+          }).length
 
           return (
-            <div key={item.id} className={`p-5 ${CARD}`}>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-3">
-                  <div className="rounded-2xl bg-slate-100 p-2.5 text-slate-600">
-                    <Icon size={20} />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-extrabold text-slate-800">
-                      {formatAccessory(item)}
-                    </h3>
-                    <p className="text-sm text-slate-400">{item.category}</p>
-                  </div>
+            <details key={category} className={`group overflow-hidden ${CARD}`} open>
+              <summary className="flex cursor-pointer list-none items-center gap-3 px-5 py-4 [&::-webkit-details-marker]:hidden">
+                <div className="rounded-2xl bg-slate-100 p-2.5 text-slate-600">
+                  <Icon size={20} />
                 </div>
-                <span
-                  className={`rounded-full px-3.5 py-1.5 text-sm font-bold ${
-                    inUse ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
-                  }`}
-                >
-                  {inUse ? '사용 중' : '대여 가능'}
+                <h3 className="text-lg font-extrabold text-slate-800">{category}</h3>
+                <span className="rounded-full bg-emerald-100 px-3 py-1 text-sm font-bold text-emerald-700">
+                  {availableCount}/{items.length} 대여 가능
                 </span>
-              </div>
+                <ChevronDown
+                  size={18}
+                  className="ml-auto text-slate-400 transition group-open:rotate-180"
+                />
+              </summary>
+              <div className="space-y-3 border-t border-slate-100 px-5 pb-5 pt-4">
+                {items.map((item) => {
+                  const history = reservations
+                    .filter((r) => r.accessories.includes(item.id) && r.status !== '취소됨')
+                    .sort(
+                      (a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime(),
+                    )
+                  const inUse = history.some(
+                    (r) =>
+                      r.status === '대여중' &&
+                      new Date(r.startAt).getTime() <= now &&
+                      new Date(r.endAt).getTime() >= now,
+                  )
 
-              <div className="mt-4 flex items-center gap-1.5 text-sm font-bold text-slate-500">
-                <History size={14} />
-                예약 히스토리 ({history.length}건)
-              </div>
+                  return (
+                    <div key={item.id} className="rounded-xl border border-slate-100 p-3.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="flex items-center gap-1.5 text-base font-bold text-slate-700">
+                          <Tag size={14} />
+                          {item.label}
+                        </span>
+                        <span
+                          className={`rounded-full px-3 py-1 text-xs font-bold ${
+                            inUse
+                              ? 'bg-amber-100 text-amber-700'
+                              : 'bg-emerald-100 text-emerald-700'
+                          }`}
+                        >
+                          {inUse ? '사용 중' : '대여 가능'}
+                        </span>
+                      </div>
 
-              {history.length === 0 ? (
-                <p className="mt-2 py-3 text-center text-base text-slate-400">
-                  예약 내역이 없습니다.
-                </p>
-              ) : (
-                <div className="mt-2 max-h-72 space-y-2 overflow-y-auto pr-1">
-                  {history.map((r) => (
-                    <ReservationRow
-                      key={r.id}
-                      reservation={r}
-                      showCamera
-                      onClick={() => onSelect(r)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
+                      {history.length === 0 ? (
+                        <p className="mt-2 text-sm text-slate-400">예약 내역이 없습니다.</p>
+                      ) : (
+                        <div className="mt-2 max-h-56 space-y-2 overflow-y-auto pr-1">
+                          {history.map((r) => (
+                            <ReservationRow
+                              key={r.id}
+                              reservation={r}
+                              showCamera
+                              onClick={() => onSelect(r)}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </details>
           )
         })}
       </div>
@@ -2074,6 +2175,9 @@ export default function App() {
   const [cameras, setCameras] = useState<CameraInfo[]>(loadCameras)
   const [accessories, setAccessories] = useState<AccessoryItem[]>(loadAccessories)
   const [myTeam, setMyTeam] = useState<TeamId>(loadMyTeam)
+  const [cloudStatus, setCloudStatus] = useState<CloudStatus>(
+    isSupabaseConfigured ? 'checking' : 'offline',
+  )
   const [tab, setTab] = useState<'calendar' | 'equipment' | 'team'>('calendar')
   const [reservationModalState, setReservationModalState] =
     useState<ReservationModalState | null>(null)
@@ -2091,6 +2195,7 @@ export default function App() {
   const [showPasswordModal, setShowPasswordModal] = useState(false)
   const [showAdminPanel, setShowAdminPanel] = useState(false)
 
+  // ---- localStorage는 항상 최신 상태의 로컬 캐시 겸 폴백으로 유지한다 ----
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(reservations))
   }, [reservations])
@@ -2110,6 +2215,73 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(MY_TEAM_STORAGE_KEY, myTeam)
   }, [myTeam])
+
+  // ---- Supabase 초기 로드 + 실시간 구독 (설정이 없거나 실패하면 localStorage 폴백 유지) ----
+  useEffect(() => {
+    if (!isSupabaseConfigured) return
+
+    let cancelled = false
+
+    fetchAllCloudData()
+      .then((data) => {
+        if (cancelled) return
+        setReservations(data.reservations)
+        setCameras(data.cameras)
+        setAccessories(data.accessories)
+        setTeamNames(data.teamNames)
+        setCloudStatus('online')
+      })
+      .catch((err) => {
+        console.error('[Supabase] 초기 데이터 로드 실패, 이 브라우저의 localStorage로 계속합니다.', err)
+        if (!cancelled) setCloudStatus('offline')
+      })
+
+    const unsubscribe = subscribeToCloudChanges({
+      onReservationChange: (payload: RealtimePostgresChangesPayload<ReservationRow>) => {
+        setReservations((prev) => {
+          if (payload.eventType === 'DELETE') {
+            const oldId = (payload.old as { id?: string })?.id
+            return prev.filter((r) => r.id !== oldId)
+          }
+          const next = rowToReservation(payload.new as ReservationRow)
+          const exists = prev.some((r) => r.id === next.id)
+          return exists ? prev.map((r) => (r.id === next.id ? next : r)) : [...prev, next]
+        })
+      },
+      onCameraChange: (payload) => {
+        setCameras((prev) => {
+          if (payload.eventType === 'DELETE') {
+            const oldId = (payload.old as { id?: string })?.id
+            return prev.filter((c) => c.id !== oldId)
+          }
+          const next = payload.new as CameraInfo
+          const exists = prev.some((c) => c.id === next.id)
+          return exists ? prev.map((c) => (c.id === next.id ? next : c)) : [...prev, next]
+        })
+      },
+      onAccessoryChange: (payload) => {
+        setAccessories((prev) => {
+          if (payload.eventType === 'DELETE') {
+            const oldId = (payload.old as { id?: string })?.id
+            return prev.filter((a) => a.id !== oldId)
+          }
+          const next = payload.new as AccessoryItem
+          const exists = prev.some((a) => a.id === next.id)
+          return exists ? prev.map((a) => (a.id === next.id ? next : a)) : [...prev, next]
+        })
+      },
+      onTeamNameChange: (payload) => {
+        if (payload.eventType === 'DELETE') return
+        const row = payload.new as TeamNameRow
+        setTeamNames((prev) => ({ ...prev, [row.id]: row.name }))
+      },
+    })
+
+    return () => {
+      cancelled = true
+      unsubscribe()
+    }
+  }, [])
 
   const availableCameraCount = useMemo(() => {
     const now = Date.now()
@@ -2135,6 +2307,7 @@ export default function App() {
         ? prev.map((r) => (r.id === reservation.id ? reservation : r))
         : [...prev, reservation]
     })
+    persistReservation(reservation)
     setReservationModalState(null)
     setDetailTarget(null)
   }
@@ -2149,13 +2322,16 @@ export default function App() {
   }
 
   function handleReturnConfirmed(id: string) {
+    const returnedAt = new Date().toISOString()
+    let updated: Reservation | undefined
     setReservations((prev) =>
-      prev.map((r) =>
-        r.id === id
-          ? { ...r, status: '반납완료', returnedAt: new Date().toISOString() }
-          : r,
-      ),
+      prev.map((r) => {
+        if (r.id !== id) return r
+        updated = { ...r, status: '반납완료', returnedAt }
+        return updated
+      }),
     )
+    if (updated) persistReservation(updated)
     setReturnTarget(null)
     setDetailTarget(null)
   }
@@ -2166,9 +2342,15 @@ export default function App() {
       confirmLabel: '예약 취소',
       danger: true,
       onConfirm: () => {
+        let updated: Reservation | undefined
         setReservations((prev) =>
-          prev.map((r) => (r.id === id ? { ...r, status: '취소됨' } : r)),
+          prev.map((r) => {
+            if (r.id !== id) return r
+            updated = { ...r, status: '취소됨' }
+            return updated
+          }),
         )
+        if (updated) persistReservation(updated)
         setDetailTarget(null)
       },
     })
@@ -2194,22 +2376,29 @@ export default function App() {
 
   function renameTeam(id: TeamId, name: string) {
     setTeamNames((prev) => ({ ...prev, [id]: name }))
+    persistTeamName(id, name)
   }
 
   function addCamera(label: string, model: string) {
-    setCameras((prev) => [...prev, { id: generateId(), label, model }])
+    const camera: CameraInfo = { id: generateId(), label, model }
+    setCameras((prev) => [...prev, camera])
+    persistCamera(camera)
   }
 
   function removeCamera(id: string) {
     setCameras((prev) => prev.filter((c) => c.id !== id))
+    deleteCameraRemote(id)
   }
 
   function addAccessory(category: string, label: string) {
-    setAccessories((prev) => [...prev, { id: generateId(), category, label }])
+    const item: AccessoryItem = { id: generateId(), category, label }
+    setAccessories((prev) => [...prev, item])
+    persistAccessory(item)
   }
 
   function removeAccessory(id: AccessoryId) {
     setAccessories((prev) => prev.filter((a) => a.id !== id))
+    deleteAccessoryRemote(id)
   }
 
   function handleAdminLogin() {
@@ -2255,9 +2444,12 @@ export default function App() {
                 <h1 className="text-2xl font-extrabold leading-tight text-slate-900 sm:text-3xl">
                   영상 촬영 장비 예약 관리
                 </h1>
-                <p className="text-sm text-slate-400">
-                  지금 대여 가능 카메라 {availableCameraCount} / {cameras.length}
-                </p>
+                <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                  <p className="text-sm text-slate-400">
+                    지금 대여 가능 카메라 {availableCameraCount} / {cameras.length}
+                  </p>
+                  <CloudStatusBadge status={cloudStatus} />
+                </div>
               </div>
             </div>
             <div className="ml-auto flex flex-wrap items-center gap-2">
@@ -2342,9 +2534,18 @@ export default function App() {
 
         <footer className="border-t border-slate-200/70 py-6 text-center text-sm text-slate-400">
           <span className="flex items-center justify-center gap-1">
-            <Mic size={13} />
-            <Lightbulb size={13} />
-            모든 데이터는 브라우저 localStorage에 저장됩니다.
+            {cloudStatus === 'online' ? (
+              <>
+                <Cloud size={13} />
+                모든 데이터는 Supabase 클라우드에 실시간으로 저장 및 공유됩니다.
+              </>
+            ) : (
+              <>
+                <Mic size={13} />
+                <Lightbulb size={13} />
+                모든 데이터는 브라우저 localStorage에 저장됩니다.
+              </>
+            )}
           </span>
         </footer>
 
