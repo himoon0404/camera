@@ -50,6 +50,7 @@ import {
   persistTeamName,
   deleteAccessoryRemote,
   deleteCameraRemote,
+  deleteReservationRemote,
   rowToReservation,
   subscribeToCloudChanges,
   type ReservationRow,
@@ -216,7 +217,7 @@ function findCameraConflict(
     (r) =>
       r.id !== excludeReservationId &&
       r.cameraId === cameraId &&
-      r.status !== '취소됨' &&
+      r.status === '대여중' &&
       isOverlapping(startAt, endAt, r.startAt, r.endAt),
   )
 }
@@ -231,7 +232,7 @@ function findAccessoryConflict(
   return reservations.find(
     (r) =>
       r.id !== excludeReservationId &&
-      r.status !== '취소됨' &&
+      r.status === '대여중' &&
       r.accessories.includes(accessoryId) &&
       isOverlapping(startAt, endAt, r.startAt, r.endAt),
   )
@@ -246,7 +247,7 @@ function findBroadcastConflict(
   return reservations.find(
     (r) =>
       r.id !== excludeReservationId &&
-      r.status !== '취소됨' &&
+      r.status === '대여중' &&
       r.isBroadcast &&
       isOverlapping(startAt, endAt, r.startAt, r.endAt),
   )
@@ -286,11 +287,31 @@ function formatTimeOnly(value: string): string {
   return idx >= 0 ? value.slice(idx + 1, idx + 6) : value
 }
 
-function nowLocalInput(offsetHours = 0): string {
-  const d = new Date(Date.now() + offsetHours * 60 * 60 * 1000)
-  d.setMinutes(d.getMinutes() - d.getTimezoneOffset())
-  return d.toISOString().slice(0, 16)
+// Date 객체를 datetime-local input과 동일한 "yyyy-MM-ddTHH:mm" 로컬 문자열로 변환
+function toLocalInputValue(d: Date): string {
+  const copy = new Date(d)
+  copy.setMinutes(copy.getMinutes() - copy.getTimezoneOffset())
+  return copy.toISOString().slice(0, 16)
 }
+
+function nowLocalInput(offsetHours = 0): string {
+  return toLocalInputValue(new Date(Date.now() + offsetHours * 60 * 60 * 1000))
+}
+
+// "yyyy-MM-ddTHH:mm" 문자열을 날짜/시/분으로 분리 (커스텀 시간 선택 UI용)
+function splitDateTime(value: string): { date: string; hour: string; minute: string } {
+  const [date, time] = value.split('T')
+  const [hour, minute] = (time ?? '00:00').split(':')
+  return { date: date ?? '', hour: hour ?? '00', minute: minute ?? '00' }
+}
+
+function combineDateTime(date: string, hour: string, minute: string): string {
+  return `${date}T${hour}:${minute}`
+}
+
+const HOUR_OPTIONS = Array.from({ length: 24 }, (_, h) => `${h}`.padStart(2, '0'))
+const MINUTE_OPTIONS = ['00', '10', '20', '30', '40', '50']
+const QUICK_DURATION_HOURS = [1, 2, 3]
 
 // ----------------------------------------------------------------------------------
 // 더미 데이터 (localStorage 전용 모드에서만 사용)
@@ -774,6 +795,62 @@ function AccessoryPickerAccordion({
 }
 
 // ----------------------------------------------------------------------------------
+// 토스 스타일 날짜/시간 선택 (날짜 + 시/분 드롭다운, 10분 단위)
+// ----------------------------------------------------------------------------------
+
+function DateTimePicker({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+}) {
+  const { date, hour, minute } = splitDateTime(value)
+  // 기존 데이터(또는 현재 시각)의 분이 10분 단위가 아닐 수 있으므로, 드롭다운에 없으면 임시로 추가해 값이 사라지지 않게 한다.
+  const minuteOptions = MINUTE_OPTIONS.includes(minute)
+    ? MINUTE_OPTIONS
+    : [...MINUTE_OPTIONS, minute].sort()
+
+  return (
+    <div>
+      <label className="mb-2 block text-base font-bold text-slate-700">{label}</label>
+      <div className="flex flex-wrap gap-2">
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => onChange(combineDateTime(e.target.value, hour, minute))}
+          className={`${INPUT} h-12 min-w-[152px] flex-1`}
+        />
+        <select
+          value={hour}
+          onChange={(e) => onChange(combineDateTime(date, e.target.value, minute))}
+          className={`${INPUT} h-12 w-[84px]`}
+        >
+          {HOUR_OPTIONS.map((h) => (
+            <option key={h} value={h}>
+              {h}시
+            </option>
+          ))}
+        </select>
+        <select
+          value={minute}
+          onChange={(e) => onChange(combineDateTime(date, hour, e.target.value))}
+          className={`${INPUT} h-12 w-[84px]`}
+        >
+          {minuteOptions.map((m) => (
+            <option key={m} value={m}>
+              {m}분
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
+  )
+}
+
+// ----------------------------------------------------------------------------------
 // 예약 등록 / 변경 모달
 // ----------------------------------------------------------------------------------
 
@@ -1010,28 +1087,26 @@ function ReservationModal({
         </div>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div>
-            <label className="mb-2 block text-base font-bold text-slate-700">
-              시작 일시
-            </label>
-            <input
-              type="datetime-local"
-              value={startAt}
-              onChange={(e) => setStartAt(e.target.value)}
-              className={`${INPUT} h-12`}
-            />
-          </div>
-          <div>
-            <label className="mb-2 block text-base font-bold text-slate-700">
-              종료 일시
-            </label>
-            <input
-              type="datetime-local"
-              value={endAt}
-              onChange={(e) => setEndAt(e.target.value)}
-              className={`${INPUT} h-12`}
-            />
-          </div>
+          <DateTimePicker label="시작 일시" value={startAt} onChange={setStartAt} />
+          <DateTimePicker label="종료 일시" value={endAt} onChange={setEndAt} />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-bold text-slate-500">빠른 선택</span>
+          {QUICK_DURATION_HOURS.map((hours) => (
+            <button
+              key={hours}
+              type="button"
+              onClick={() => {
+                const start = new Date(startAt)
+                if (Number.isNaN(start.getTime())) return
+                setEndAt(toLocalInputValue(new Date(start.getTime() + hours * 60 * 60 * 1000)))
+              }}
+              className="rounded-full border border-slate-200 px-4 py-2 text-sm font-bold text-slate-600 transition hover:border-[#3182f6] hover:text-[#3182f6]"
+            >
+              +{hours}시간
+            </button>
+          ))}
         </div>
 
         <div>
@@ -1529,7 +1604,7 @@ function ReservationRow({
   const start = new Date(reservation.startAt).getTime()
   const end = new Date(reservation.endAt).getTime()
   const timing =
-    reservation.status === '취소됨'
+    reservation.status !== '대여중'
       ? null
       : end < now
         ? '지난 예약'
@@ -2323,11 +2398,19 @@ export default function App() {
 
   function handleReturnConfirmed(id: string) {
     const returnedAt = new Date().toISOString()
+    const nowInput = nowLocalInput()
     let updated: Reservation | undefined
     setReservations((prev) =>
       prev.map((r) => {
         if (r.id !== id) return r
-        updated = { ...r, status: '반납완료', returnedAt }
+        // 조기 반납이면 종료 시각을 실제 반납 시점으로 단축해 잔여 시간을 즉시 해제한다.
+        const isEarlyReturn = new Date(nowInput).getTime() < new Date(r.endAt).getTime()
+        updated = {
+          ...r,
+          status: '반납완료',
+          returnedAt,
+          endAt: isEarlyReturn ? nowInput : r.endAt,
+        }
         return updated
       }),
     )
@@ -2338,19 +2421,12 @@ export default function App() {
 
   function handleCancel(id: string) {
     setConfirmDialog({
-      message: '이 예약을 취소하시겠습니까?',
+      message: '이 예약을 취소하시겠습니까? 취소된 예약은 기록 없이 완전히 삭제되며 복구할 수 없습니다.',
       confirmLabel: '예약 취소',
       danger: true,
       onConfirm: () => {
-        let updated: Reservation | undefined
-        setReservations((prev) =>
-          prev.map((r) => {
-            if (r.id !== id) return r
-            updated = { ...r, status: '취소됨' }
-            return updated
-          }),
-        )
-        if (updated) persistReservation(updated)
+        setReservations((prev) => prev.filter((r) => r.id !== id))
+        deleteReservationRemote(id)
         setDetailTarget(null)
       },
     })

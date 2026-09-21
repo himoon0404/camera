@@ -179,6 +179,12 @@ export async function persistReservation(reservation: Reservation): Promise<void
   if (error) console.error('[cloudSync] 예약 저장 실패:', error.message)
 }
 
+export async function deleteReservationRemote(id: string): Promise<void> {
+  if (!supabase) return
+  const { error } = await supabase.from('reservations').delete().eq('id', id)
+  if (error) console.error('[cloudSync] 예약 삭제 실패:', error.message)
+}
+
 export async function persistCamera(camera: CameraInfo): Promise<void> {
   if (!supabase) return
   const { error } = await supabase.from('cameras').upsert(camera)
