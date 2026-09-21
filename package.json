@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "homepage": "https://himoon.github.io/camera/",
+  "homepage": "https://himoon0404.github.io/camera/",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

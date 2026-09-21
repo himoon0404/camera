@@ -1,17 +1,30 @@
-import { useEffect, useMemo, useState } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Camera,
-  CalendarClock,
-  ListChecks,
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
+  ChevronDown,
+  Users,
   Plus,
   X,
   CheckCircle2,
-  Trash2,
   AlertTriangle,
   Mic,
   Video,
   Battery,
   Lightbulb,
+  History,
+  Lock,
+  Unlock,
+  LogOut,
+  Pencil,
+  Check,
+  Trash2,
+  Radio,
+  Package,
+  Tag,
+  ShieldCheck,
 } from 'lucide-react'
 
 // ----------------------------------------------------------------------------------
@@ -19,22 +32,18 @@ import {
 // ----------------------------------------------------------------------------------
 
 type TeamId = '1조' | '2조' | '3조' | '4조' | '5조'
-type CameraId = 'A' | 'B' | 'C'
-type AccessoryId =
-  | '무선 마이크 세트'
-  | '삼각대'
-  | '추가 배터리(2구)'
-  | 'LED 지속광 조명'
-  | '샷건 마이크'
+type CameraId = string
+type AccessoryId = string
 type ReservationStatus = '대여중' | '반납완료' | '취소됨'
 
 interface Team {
   id: TeamId
   label: string
-  color: string // tailwind bg 계열 accent
+  color: string
   textColor: string
   borderColor: string
   softBg: string
+  ring: string
 }
 
 interface CameraInfo {
@@ -43,11 +52,10 @@ interface CameraInfo {
   model: string
 }
 
-interface ReturnInfo {
-  sdCardFormatted: boolean
-  batteryCharged: boolean
-  note: string
-  returnedAt: string
+interface AccessoryItem {
+  id: AccessoryId
+  category: string
+  label: string
 }
 
 interface Reservation {
@@ -55,26 +63,36 @@ interface Reservation {
   teamId: TeamId
   cameraId: CameraId
   accessories: AccessoryId[]
-  startAt: string // datetime-local 문자열
+  isBroadcast: boolean
+  startAt: string
   endAt: string
   purpose: string
   status: ReservationStatus
   createdAt: string
-  returnInfo?: ReturnInfo
+  returnedAt?: string
 }
+
+type ReservationModalState =
+  | { mode: 'create'; presetDate?: string; presetCameraId?: CameraId }
+  | { mode: 'edit'; reservation: Reservation }
 
 // ----------------------------------------------------------------------------------
 // 상수 데이터
 // ----------------------------------------------------------------------------------
 
+const TOSS_BLUE = '#3182f6'
+const TOSS_BLUE_HOVER = '#2272eb'
+const TOSS_BG = '#f2f4f6'
+
 const TEAMS: Team[] = [
   {
     id: '1조',
     label: '1조',
-    color: 'bg-blue-500',
-    textColor: 'text-blue-700',
-    borderColor: 'border-blue-400',
-    softBg: 'bg-blue-50',
+    color: 'bg-cyan-500',
+    textColor: 'text-cyan-700',
+    borderColor: 'border-cyan-400',
+    softBg: 'bg-cyan-50',
+    ring: 'ring-cyan-200',
   },
   {
     id: '2조',
@@ -83,6 +101,7 @@ const TEAMS: Team[] = [
     textColor: 'text-emerald-700',
     borderColor: 'border-emerald-400',
     softBg: 'bg-emerald-50',
+    ring: 'ring-emerald-200',
   },
   {
     id: '3조',
@@ -91,14 +110,16 @@ const TEAMS: Team[] = [
     textColor: 'text-amber-700',
     borderColor: 'border-amber-400',
     softBg: 'bg-amber-50',
+    ring: 'ring-amber-200',
   },
   {
     id: '4조',
     label: '4조',
-    color: 'bg-purple-500',
-    textColor: 'text-purple-700',
-    borderColor: 'border-purple-400',
-    softBg: 'bg-purple-50',
+    color: 'bg-violet-500',
+    textColor: 'text-violet-700',
+    borderColor: 'border-violet-400',
+    softBg: 'bg-violet-50',
+    ring: 'ring-violet-200',
   },
   {
     id: '5조',
@@ -107,24 +128,42 @@ const TEAMS: Team[] = [
     textColor: 'text-rose-700',
     borderColor: 'border-rose-400',
     softBg: 'bg-rose-50',
+    ring: 'ring-rose-200',
   },
 ]
 
-const CAMERAS: CameraInfo[] = [
+const DEFAULT_CAMERAS: CameraInfo[] = [
   { id: 'A', label: 'Camera A', model: 'Sony FX3' },
   { id: 'B', label: 'Camera B', model: 'Canon R6 Mark II' },
   { id: 'C', label: 'Camera C', model: 'Lumix S5II' },
 ]
 
-const ACCESSORIES: AccessoryId[] = [
-  '무선 마이크 세트',
-  '삼각대',
-  '추가 배터리(2구)',
-  'LED 지속광 조명',
-  '샷건 마이크',
+const DEFAULT_TEAM_NAMES: Record<TeamId, string> = {
+  '1조': '1조',
+  '2조': '2조',
+  '3조': '3조',
+  '4조': '4조',
+  '5조': '5조',
+}
+
+const WEEKDAY_LABELS = ['일', '월', '화', '수', '목', '금', '토']
+
+const DEFAULT_ACCESSORIES: AccessoryItem[] = [
+  { id: 'sd-01', category: 'SD카드', label: 'SD-01' },
+  { id: 'sd-02', category: 'SD카드', label: 'SD-02' },
+  { id: 'bat-01', category: '배터리', label: 'BAT-01' },
+  { id: 'bat-02', category: '배터리', label: 'BAT-02' },
+  { id: 'mic-1', category: '무선 마이크', label: 'MIC-1' },
+  { id: 'tri-01', category: '삼각대', label: 'TRI-01' },
 ]
 
-const STORAGE_KEY = 'camera-reservation-data-v1'
+const STORAGE_KEY = 'camera-reservation-data-v3'
+const TEAM_NAMES_STORAGE_KEY = 'camera-team-names-v1'
+const CAMERAS_STORAGE_KEY = 'camera-equipment-cameras-v1'
+const ACCESSORIES_STORAGE_KEY = 'camera-equipment-accessories-v2'
+const ADMIN_SESSION_KEY = 'camera-admin-session-v1'
+const MY_TEAM_STORAGE_KEY = 'camera-my-team-v1'
+const ADMIN_PASSWORD = '9126'
 
 // ----------------------------------------------------------------------------------
 // 유틸 함수
@@ -132,10 +171,6 @@ const STORAGE_KEY = 'camera-reservation-data-v1'
 
 function getTeam(teamId: TeamId): Team {
   return TEAMS.find((t) => t.id === teamId)!
-}
-
-function getCamera(cameraId: CameraId): CameraInfo {
-  return CAMERAS.find((c) => c.id === cameraId)!
 }
 
 function formatDateTime(value: string): string {
@@ -151,7 +186,6 @@ function formatDateTime(value: string): string {
   })
 }
 
-// 두 예약 시간대가 1분이라도 겹치는지 확인 (종료==시작인 맞닿는 경우는 겹침 아님)
 function isOverlapping(
   startA: string,
   endA: string,
@@ -169,6 +203,91 @@ function generateId(): string {
   return `res-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
+function formatAccessory(item: AccessoryItem): string {
+  return `${item.category} (${item.label})`
+}
+
+function findCameraConflict(
+  reservations: Reservation[],
+  cameraId: CameraId,
+  startAt: string,
+  endAt: string,
+  excludeReservationId?: string,
+): Reservation | undefined {
+  return reservations.find(
+    (r) =>
+      r.id !== excludeReservationId &&
+      r.cameraId === cameraId &&
+      r.status !== '취소됨' &&
+      isOverlapping(startAt, endAt, r.startAt, r.endAt),
+  )
+}
+
+function findAccessoryConflict(
+  reservations: Reservation[],
+  accessoryId: AccessoryId,
+  startAt: string,
+  endAt: string,
+  excludeReservationId?: string,
+): Reservation | undefined {
+  return reservations.find(
+    (r) =>
+      r.id !== excludeReservationId &&
+      r.status !== '취소됨' &&
+      r.accessories.includes(accessoryId) &&
+      isOverlapping(startAt, endAt, r.startAt, r.endAt),
+  )
+}
+
+function findBroadcastConflict(
+  reservations: Reservation[],
+  startAt: string,
+  endAt: string,
+  excludeReservationId?: string,
+): Reservation | undefined {
+  return reservations.find(
+    (r) =>
+      r.id !== excludeReservationId &&
+      r.status !== '취소됨' &&
+      r.isBroadcast &&
+      isOverlapping(startAt, endAt, r.startAt, r.endAt),
+  )
+}
+
+function toDateKey(d: Date): string {
+  const y = d.getFullYear()
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function getCalendarGridDays(year: number, month: number): Date[] {
+  const firstOfMonth = new Date(year, month, 1)
+  const gridStart = new Date(year, month, 1 - firstOfMonth.getDay())
+  return Array.from({ length: 42 }, (_, i) => {
+    const d = new Date(gridStart)
+    d.setDate(gridStart.getDate() + i)
+    return d
+  })
+}
+
+function reservationOverlapsDay(r: Reservation, day: Date): boolean {
+  const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate())
+  const dayEnd = new Date(dayStart)
+  dayEnd.setDate(dayEnd.getDate() + 1)
+  return isOverlapping(
+    r.startAt,
+    r.endAt,
+    dayStart.toISOString(),
+    dayEnd.toISOString(),
+  )
+}
+
+function formatTimeOnly(value: string): string {
+  const idx = value.indexOf('T')
+  return idx >= 0 ? value.slice(idx + 1, idx + 6) : value
+}
+
 function nowLocalInput(offsetHours = 0): string {
   const d = new Date(Date.now() + offsetHours * 60 * 60 * 1000)
   d.setMinutes(d.getMinutes() - d.getTimezoneOffset())
@@ -176,7 +295,7 @@ function nowLocalInput(offsetHours = 0): string {
 }
 
 // ----------------------------------------------------------------------------------
-// 더미 데이터 (최초 실행 시 기본 세팅)
+// 더미 데이터
 // ----------------------------------------------------------------------------------
 
 function buildDummyData(): Reservation[] {
@@ -185,7 +304,8 @@ function buildDummyData(): Reservation[] {
       id: generateId(),
       teamId: '1조',
       cameraId: 'A',
-      accessories: ['삼각대', '샷건 마이크'],
+      accessories: ['tri-01', 'mic-1'],
+      isBroadcast: false,
       startAt: nowLocalInput(1),
       endAt: nowLocalInput(4),
       purpose: '캠퍼스 홍보 영상 촬영',
@@ -196,27 +316,24 @@ function buildDummyData(): Reservation[] {
       id: generateId(),
       teamId: '2조',
       cameraId: 'B',
-      accessories: ['무선 마이크 세트', '추가 배터리(2구)'],
+      accessories: ['mic-1', 'bat-01'],
+      isBroadcast: false,
       startAt: nowLocalInput(-6),
       endAt: nowLocalInput(-3),
       purpose: '인터뷰 촬영',
       status: '반납완료',
       createdAt: new Date().toISOString(),
-      returnInfo: {
-        sdCardFormatted: true,
-        batteryCharged: true,
-        note: '이상 없음',
-        returnedAt: new Date().toISOString(),
-      },
+      returnedAt: new Date().toISOString(),
     },
     {
       id: generateId(),
       teamId: '3조',
       cameraId: 'C',
-      accessories: ['LED 지속광 조명'],
+      accessories: ['bat-02', 'sd-02'],
+      isBroadcast: true,
       startAt: nowLocalInput(24),
       endAt: nowLocalInput(27),
-      purpose: '스튜디오 제품 촬영',
+      purpose: '방송국 스튜디오 제품 촬영',
       status: '대여중',
       createdAt: new Date().toISOString(),
     },
@@ -224,7 +341,8 @@ function buildDummyData(): Reservation[] {
       id: generateId(),
       teamId: '4조',
       cameraId: 'A',
-      accessories: ['삼각대', '무선 마이크 세트', 'LED 지속광 조명'],
+      accessories: ['sd-01'],
+      isBroadcast: false,
       startAt: nowLocalInput(30),
       endAt: nowLocalInput(33),
       purpose: '단편 영화 촬영 - 실내 씬',
@@ -250,33 +368,147 @@ function loadReservations(): Reservation[] {
   }
 }
 
+function loadTeamNames(): Record<TeamId, string> {
+  try {
+    const raw = localStorage.getItem(TEAM_NAMES_STORAGE_KEY)
+    if (!raw) {
+      localStorage.setItem(
+        TEAM_NAMES_STORAGE_KEY,
+        JSON.stringify(DEFAULT_TEAM_NAMES),
+      )
+      return { ...DEFAULT_TEAM_NAMES }
+    }
+    return { ...DEFAULT_TEAM_NAMES, ...(JSON.parse(raw) as Record<TeamId, string>) }
+  } catch {
+    return { ...DEFAULT_TEAM_NAMES }
+  }
+}
+
+function loadCameras(): CameraInfo[] {
+  try {
+    const raw = localStorage.getItem(CAMERAS_STORAGE_KEY)
+    if (!raw) {
+      localStorage.setItem(CAMERAS_STORAGE_KEY, JSON.stringify(DEFAULT_CAMERAS))
+      return [...DEFAULT_CAMERAS]
+    }
+    return JSON.parse(raw) as CameraInfo[]
+  } catch {
+    return [...DEFAULT_CAMERAS]
+  }
+}
+
+function loadAccessories(): AccessoryItem[] {
+  try {
+    const raw = localStorage.getItem(ACCESSORIES_STORAGE_KEY)
+    if (!raw) {
+      localStorage.setItem(
+        ACCESSORIES_STORAGE_KEY,
+        JSON.stringify(DEFAULT_ACCESSORIES),
+      )
+      return [...DEFAULT_ACCESSORIES]
+    }
+    return JSON.parse(raw) as AccessoryItem[]
+  } catch {
+    return [...DEFAULT_ACCESSORIES]
+  }
+}
+
+function loadMyTeam(): TeamId {
+  try {
+    const raw = localStorage.getItem(MY_TEAM_STORAGE_KEY)
+    if (raw && TEAMS.some((t) => t.id === raw)) return raw as TeamId
+    localStorage.setItem(MY_TEAM_STORAGE_KEY, '1조')
+    return '1조'
+  } catch {
+    return '1조'
+  }
+}
+
+// ----------------------------------------------------------------------------------
+// 공용 데이터 컨텍스트
+// ----------------------------------------------------------------------------------
+
+interface AppDataContextValue {
+  teamNames: Record<TeamId, string>
+  cameras: CameraInfo[]
+  accessories: AccessoryItem[]
+  myTeam: TeamId
+  isAdmin: boolean
+  getTeamLabel: (id: TeamId) => string
+  getCameraById: (id: string) => CameraInfo
+  getAccessoryById: (id: AccessoryId) => AccessoryItem
+  renameTeam: (id: TeamId, name: string) => void
+  addCamera: (label: string, model: string) => void
+  removeCamera: (id: string) => void
+  addAccessory: (category: string, label: string) => void
+  removeAccessory: (id: AccessoryId) => void
+  confirmAction: (opts: {
+    message: string
+    confirmLabel?: string
+    danger?: boolean
+    onConfirm: () => void
+  }) => void
+}
+
+const AppDataContext = createContext<AppDataContextValue | null>(null)
+
+function useAppData(): AppDataContextValue {
+  const ctx = useContext(AppDataContext)
+  if (!ctx) {
+    throw new Error('useAppData must be used within AppDataContext.Provider')
+  }
+  return ctx
+}
+
 // ----------------------------------------------------------------------------------
 // 공통 UI 컴포넌트
 // ----------------------------------------------------------------------------------
 
-function TeamBadge({ teamId }: { teamId: TeamId }) {
+const PRIMARY_BTN =
+  'inline-flex h-12 items-center justify-center gap-1.5 rounded-xl px-5 text-base font-bold text-white transition active:scale-[0.98]'
+const SECONDARY_BTN =
+  'inline-flex h-12 items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-5 text-base font-bold text-slate-600 transition hover:bg-slate-50 active:scale-[0.98]'
+const CARD = 'rounded-2xl bg-white shadow-sm ring-1 ring-slate-900/[0.03]'
+const INPUT =
+  'w-full rounded-xl border border-slate-200 bg-white px-4 text-base text-slate-800 outline-none transition focus:border-[#3182f6] focus:ring-4 focus:ring-[#3182f6]/10'
+
+function TeamBadge({ teamId, size = 'md' }: { teamId: TeamId; size?: 'sm' | 'md' }) {
   const team = getTeam(teamId)
+  const { getTeamLabel } = useAppData()
+  const sizeClasses =
+    size === 'sm'
+      ? 'px-2.5 py-1 text-xs gap-1'
+      : 'px-3 py-1.5 text-sm gap-1.5'
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold text-white ${team.color}`}
+      className={`inline-flex items-center rounded-full font-bold text-white ${sizeClasses} ${team.color}`}
     >
       <span className="h-1.5 w-1.5 rounded-full bg-white/80" />
-      {team.label}
+      {getTeamLabel(teamId)}
     </span>
   )
 }
 
 function StatusBadge({ status }: { status: ReservationStatus }) {
   const styles: Record<ReservationStatus, string> = {
-    대여중: 'bg-sky-100 text-sky-700 border-sky-300',
-    반납완료: 'bg-slate-100 text-slate-600 border-slate-300',
-    취소됨: 'bg-red-100 text-red-600 border-red-300',
+    대여중: 'bg-sky-100 text-sky-700',
+    반납완료: 'bg-slate-100 text-slate-500',
+    취소됨: 'bg-red-100 text-red-600',
   }
   return (
     <span
-      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${styles[status]}`}
+      className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold ${styles[status]}`}
     >
       {status}
+    </span>
+  )
+}
+
+function BroadcastBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2.5 py-1 text-xs font-bold text-violet-700">
+      <Radio size={12} />
+      방송국
     </span>
   )
 }
@@ -291,43 +523,189 @@ function Modal({
   children: React.ReactNode
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white shadow-2xl">
-        <div className="sticky top-0 flex items-center justify-between border-b border-slate-200 bg-white px-6 py-4">
-          <h2 className="text-lg font-bold text-slate-800">{title}</h2>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-[2px]">
+      <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-3xl bg-white shadow-2xl">
+        <div className="sticky top-0 z-10 flex items-center justify-between rounded-t-3xl border-b border-slate-100 bg-white/95 px-6 py-5 backdrop-blur">
+          <h2 className="text-xl font-extrabold text-slate-900 sm:text-2xl">{title}</h2>
           <button
             onClick={onClose}
-            className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            className="rounded-full p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
           >
-            <X size={20} />
+            <X size={22} />
           </button>
         </div>
-        <div className="px-6 py-5">{children}</div>
+        <div className="px-6 py-6">{children}</div>
+      </div>
+    </div>
+  )
+}
+
+function ConfirmDialog({
+  title = '확인',
+  message,
+  confirmLabel = '확인',
+  danger,
+  onCancel,
+  onConfirm,
+}: {
+  title?: string
+  message: string
+  confirmLabel?: string
+  danger?: boolean
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-[2px]">
+      <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl">
+        <div className="flex items-start gap-3">
+          <div
+            className={`rounded-2xl p-2.5 ${danger ? 'bg-red-50 text-red-500' : 'bg-blue-50 text-[#3182f6]'}`}
+          >
+            <AlertTriangle size={22} />
+          </div>
+          <div>
+            <h2 className="text-lg font-extrabold text-slate-900">{title}</h2>
+            <p className="mt-1.5 text-base text-slate-600">{message}</p>
+          </div>
+        </div>
+        <div className="mt-6 flex justify-end gap-2">
+          <button onClick={onCancel} className={SECONDARY_BTN}>
+            취소
+          </button>
+          <button
+            onClick={onConfirm}
+            className={PRIMARY_BTN}
+            style={{ backgroundColor: danger ? '#ef4444' : TOSS_BLUE }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = danger ? '#dc2626' : TOSS_BLUE_HOVER
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = danger ? '#ef4444' : TOSS_BLUE
+            }}
+          >
+            {confirmLabel}
+          </button>
+        </div>
       </div>
     </div>
   )
 }
 
 // ----------------------------------------------------------------------------------
-// 예약 등록 모달
+// 내 조 선택 드롭다운
+// ----------------------------------------------------------------------------------
+
+function MyTeamSwitcher({
+  myTeam,
+  onChange,
+}: {
+  myTeam: TeamId
+  onChange: (id: TeamId) => void
+}) {
+  const { getTeamLabel } = useAppData()
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const team = getTeam(myTeam)
+
+  useEffect(() => {
+    function handleOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handleOutside)
+    return () => document.removeEventListener('mousedown', handleOutside)
+  }, [])
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className={`flex h-12 items-center gap-2 rounded-xl border px-4 text-base font-bold transition ${team.softBg} ${team.borderColor} ${team.textColor}`}
+      >
+        <span className={`h-2.5 w-2.5 rounded-full ${team.color}`} />
+        내 조: {getTeamLabel(myTeam)}
+        <ChevronDown size={16} className={`transition ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute right-0 z-30 mt-2 w-48 overflow-hidden rounded-2xl bg-white p-1.5 shadow-xl ring-1 ring-slate-900/5">
+          {TEAMS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => {
+                onChange(t.id)
+                setOpen(false)
+              }}
+              className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-base font-semibold transition hover:bg-slate-50 ${
+                t.id === myTeam ? t.textColor : 'text-slate-600'
+              }`}
+            >
+              <span className={`h-2.5 w-2.5 rounded-full ${t.color}`} />
+              {getTeamLabel(t.id)}
+              {t.id === myTeam && <Check size={16} className="ml-auto" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ----------------------------------------------------------------------------------
+// 예약 등록 / 변경 모달
 // ----------------------------------------------------------------------------------
 
 function ReservationModal({
   reservations,
+  myTeam,
+  state,
   onClose,
   onSubmit,
 }: {
   reservations: Reservation[]
+  myTeam: TeamId
+  state: ReservationModalState
   onClose: () => void
   onSubmit: (reservation: Reservation) => void
 }) {
-  const [teamId, setTeamId] = useState<TeamId>('1조')
-  const [cameraId, setCameraId] = useState<CameraId>('A')
-  const [accessories, setAccessories] = useState<AccessoryId[]>([])
-  const [startAt, setStartAt] = useState(nowLocalInput())
-  const [endAt, setEndAt] = useState(nowLocalInput(2))
-  const [purpose, setPurpose] = useState('')
+  const isEdit = state.mode === 'edit'
+  const existing = isEdit ? state.reservation : undefined
+  const {
+    cameras,
+    accessories: availableAccessories,
+    getTeamLabel,
+    getCameraById,
+  } = useAppData()
+
+  const [teamId, setTeamId] = useState<TeamId>(existing?.teamId ?? myTeam)
+  const [cameraId, setCameraId] = useState<CameraId>(
+    () =>
+      existing?.cameraId ??
+      (state.mode === 'create' ? state.presetCameraId : undefined) ??
+      cameras[0]?.id ??
+      '',
+  )
+  const [accessories, setAccessories] = useState<AccessoryId[]>(
+    existing?.accessories ?? [],
+  )
+  const [isBroadcast, setIsBroadcast] = useState(existing?.isBroadcast ?? false)
+  const [startAt, setStartAt] = useState(
+    existing?.startAt ??
+      (state.mode === 'create' && state.presetDate
+        ? `${state.presetDate}T09:00`
+        : nowLocalInput()),
+  )
+  const [endAt, setEndAt] = useState(
+    existing?.endAt ??
+      (state.mode === 'create' && state.presetDate
+        ? `${state.presetDate}T11:00`
+        : nowLocalInput(2)),
+  )
+  const [purpose, setPurpose] = useState(existing?.purpose ?? '')
   const [error, setError] = useState('')
+
+  const excludeId = existing?.id
+  const hasValidRange =
+    !!startAt && !!endAt && new Date(startAt).getTime() < new Date(endAt).getTime()
 
   function toggleAccessory(item: AccessoryId) {
     setAccessories((prev) =>
@@ -350,140 +728,233 @@ function ReservationModal({
       setError('촬영 목적을 입력해주세요.')
       return
     }
+    if (!cameraId) {
+      setError('카메라를 선택해주세요.')
+      return
+    }
 
-    const conflict = reservations.find(
-      (r) =>
-        r.cameraId === cameraId &&
-        r.status !== '취소됨' &&
-        isOverlapping(startAt, endAt, r.startAt, r.endAt),
+    const conflict = findCameraConflict(
+      reservations,
+      cameraId,
+      startAt,
+      endAt,
+      excludeId,
     )
-
     if (conflict) {
-      const cam = getCamera(cameraId)
-      alert(
-        `⚠ 예약 충돌 발생!\n\n${cam.label}(${cam.model})는 ${getTeam(conflict.teamId).label}이(가) ` +
-          `${formatDateTime(conflict.startAt)} ~ ${formatDateTime(conflict.endAt)} 동안 이미 예약했습니다.\n` +
+      const cam = getCameraById(cameraId)
+      setError(
+        `⚠ 예약 충돌: ${cam.label}(${cam.model})는 ${getTeamLabel(conflict.teamId)}이(가) ` +
+          `${formatDateTime(conflict.startAt)} ~ ${formatDateTime(conflict.endAt)} 동안 이미 예약했습니다. ` +
           `해당 시간과 1분이라도 겹치는 예약은 등록할 수 없습니다.`,
       )
       return
     }
 
+    for (const accessoryId of accessories) {
+      const accConflict = findAccessoryConflict(
+        reservations,
+        accessoryId,
+        startAt,
+        endAt,
+        excludeId,
+      )
+      if (accConflict) {
+        const item = availableAccessories.find((a) => a.id === accessoryId)
+        setError(
+          `⚠ 예약 충돌: ${item ? formatAccessory(item) : accessoryId}는 ${getTeamLabel(accConflict.teamId)}이(가) ` +
+            `${formatDateTime(accConflict.startAt)} ~ ${formatDateTime(accConflict.endAt)} 동안 이미 예약했습니다.`,
+        )
+        return
+      }
+    }
+
+    if (
+      isBroadcast &&
+      findBroadcastConflict(reservations, startAt, endAt, excludeId)
+    ) {
+      setError('해당 시간대에 방송국 예약이 이미 차 있습니다.')
+      return
+    }
+
     const reservation: Reservation = {
-      id: generateId(),
+      id: existing?.id ?? generateId(),
       teamId,
       cameraId,
       accessories,
+      isBroadcast,
       startAt,
       endAt,
       purpose: purpose.trim(),
-      status: '대여중',
-      createdAt: new Date().toISOString(),
+      status: existing?.status ?? '대여중',
+      createdAt: existing?.createdAt ?? new Date().toISOString(),
+      returnedAt: existing?.returnedAt,
     }
     onSubmit(reservation)
   }
 
   return (
-    <Modal title="장비 예약 등록" onClose={onClose}>
-      <div className="space-y-5">
+    <Modal title={isEdit ? '예약 변경' : '장비 예약 등록'} onClose={onClose}>
+      <div className="space-y-6">
         <div>
-          <label className="mb-2 block text-sm font-semibold text-slate-700">
-            조 선택
+          <label className="mb-2 block text-base font-bold text-slate-700">
+            예약 조
           </label>
           <div className="flex flex-wrap gap-2">
             {TEAMS.map((team) => (
               <button
                 key={team.id}
                 onClick={() => setTeamId(team.id)}
-                className={`rounded-full border px-3 py-1.5 text-sm font-medium transition ${
+                className={`rounded-full border px-4 py-2 text-base font-bold transition ${
                   teamId === team.id
                     ? `${team.color} border-transparent text-white`
                     : `${team.softBg} ${team.textColor} ${team.borderColor}`
                 }`}
               >
-                {team.label}
+                {getTeamLabel(team.id)}
               </button>
             ))}
           </div>
         </div>
 
         <div>
-          <label className="mb-2 block text-sm font-semibold text-slate-700">
+          <label className="mb-2 block text-base font-bold text-slate-700">
             카메라 선택
           </label>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-            {CAMERAS.map((cam) => (
-              <button
-                key={cam.id}
-                onClick={() => setCameraId(cam.id)}
-                className={`flex flex-col items-start rounded-xl border-2 px-3 py-2 text-left transition ${
-                  cameraId === cam.id
-                    ? 'border-indigo-500 bg-indigo-50'
-                    : 'border-slate-200 hover:border-slate-300'
-                }`}
-              >
-                <span className="flex items-center gap-1.5 text-sm font-bold text-slate-800">
-                  <Video size={15} />
-                  {cam.label}
-                </span>
-                <span className="text-xs text-slate-500">{cam.model}</span>
-              </button>
-            ))}
-          </div>
+          {cameras.length === 0 ? (
+            <p className="rounded-xl bg-amber-50 px-3 py-2.5 text-sm text-amber-700">
+              등록된 카메라가 없습니다. 관리자 설정에서 카메라를 먼저 추가해주세요.
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              {cameras.map((cam) => (
+                <button
+                  key={cam.id}
+                  onClick={() => setCameraId(cam.id)}
+                  className={`flex flex-col items-start rounded-xl border-2 px-3.5 py-3 text-left transition ${
+                    cameraId === cam.id
+                      ? 'border-[#3182f6] bg-blue-50'
+                      : 'border-slate-200 hover:border-slate-300'
+                  }`}
+                >
+                  <span className="flex items-center gap-1.5 text-base font-bold text-slate-800">
+                    <Video size={16} />
+                    {cam.label}
+                  </span>
+                  <span className="text-sm text-slate-500">{cam.model}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <div>
-          <label className="mb-2 block text-sm font-semibold text-slate-700">
-            부속 기자재 (다중 선택)
+          <label className="mb-2 block text-base font-bold text-slate-700">
+            부속 기자재 (라벨 번호 단위 다중 선택)
           </label>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {ACCESSORIES.map((item) => (
-              <label
-                key={item}
-                className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm transition ${
-                  accessories.includes(item)
-                    ? 'border-indigo-400 bg-indigo-50 text-indigo-700'
-                    : 'border-slate-200 text-slate-600 hover:border-slate-300'
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={accessories.includes(item)}
-                  onChange={() => toggleAccessory(item)}
-                  className="h-4 w-4 rounded accent-indigo-600"
-                />
-                {item}
-              </label>
-            ))}
-          </div>
+          {availableAccessories.length === 0 ? (
+            <p className="text-sm text-slate-400">등록된 부속 기자재가 없습니다.</p>
+          ) : (
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {availableAccessories.map((item) => {
+                const checked = accessories.includes(item.id)
+                const conflict = hasValidRange
+                  ? findAccessoryConflict(
+                      reservations,
+                      item.id,
+                      startAt,
+                      endAt,
+                      excludeId,
+                    )
+                  : undefined
+                const disabled = !!conflict && !checked
+                return (
+                  <label
+                    key={item.id}
+                    className={`flex items-center gap-2 rounded-xl border px-3.5 py-2.5 text-base transition ${
+                      disabled
+                        ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-300'
+                        : checked
+                          ? 'cursor-pointer border-[#3182f6] bg-blue-50 text-[#3182f6]'
+                          : 'cursor-pointer border-slate-200 text-slate-600 hover:border-slate-300'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={disabled}
+                      onChange={() => toggleAccessory(item.id)}
+                      className="h-4 w-4 rounded accent-[#3182f6]"
+                    />
+                    <span className="flex items-center gap-1">
+                      <Tag size={13} />
+                      {formatAccessory(item)}
+                    </span>
+                    {disabled && conflict && (
+                      <span className="ml-auto text-xs font-bold text-red-400">
+                        {getTeamLabel(conflict.teamId)} 예약중
+                      </span>
+                    )}
+                  </label>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        <div>
+          <label
+            className={`flex cursor-pointer items-start gap-2.5 rounded-xl border px-4 py-3.5 transition ${
+              isBroadcast
+                ? 'border-violet-400 bg-violet-50'
+                : 'border-slate-200 hover:border-slate-300'
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={isBroadcast}
+              onChange={(e) => setIsBroadcast(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded accent-violet-600"
+            />
+            <span>
+              <span className="flex items-center gap-1.5 text-base font-bold text-slate-700">
+                <Radio size={15} className="text-violet-600" />
+                방송국 사용
+              </span>
+              <span className="mt-0.5 block text-sm text-slate-400">
+                방송국은 동시간대에 1개 조만 단독 사용할 수 있습니다. 야외·일반
+                촬영은 체크하지 않아도 됩니다.
+              </span>
+            </span>
+          </label>
         </div>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
-            <label className="mb-2 block text-sm font-semibold text-slate-700">
+            <label className="mb-2 block text-base font-bold text-slate-700">
               시작 일시
             </label>
             <input
               type="datetime-local"
               value={startAt}
               onChange={(e) => setStartAt(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+              className={`${INPUT} h-12`}
             />
           </div>
           <div>
-            <label className="mb-2 block text-sm font-semibold text-slate-700">
+            <label className="mb-2 block text-base font-bold text-slate-700">
               종료 일시
             </label>
             <input
               type="datetime-local"
               value={endAt}
               onChange={(e) => setEndAt(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+              className={`${INPUT} h-12`}
             />
           </div>
         </div>
 
         <div>
-          <label className="mb-2 block text-sm font-semibold text-slate-700">
+          <label className="mb-2 block text-base font-bold text-slate-700">
             촬영 목적
           </label>
           <textarea
@@ -491,29 +962,29 @@ function ReservationModal({
             onChange={(e) => setPurpose(e.target.value)}
             rows={2}
             placeholder="예) 캠퍼스 홍보 영상 촬영"
-            className="w-full resize-none rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+            className={`${INPUT} resize-none py-3`}
           />
         </div>
 
         {error && (
-          <div className="flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">
-            <AlertTriangle size={16} />
+          <div className="flex items-center gap-2 rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-600">
+            <AlertTriangle size={16} className="shrink-0" />
             {error}
           </div>
         )}
 
         <div className="flex justify-end gap-2 pt-2">
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
-          >
+          <button onClick={onClose} className={SECONDARY_BTN}>
             취소
           </button>
           <button
             onClick={handleSubmit}
-            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
+            className={PRIMARY_BTN}
+            style={{ backgroundColor: TOSS_BLUE }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = TOSS_BLUE_HOVER)}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = TOSS_BLUE)}
           >
-            예약 등록
+            {isEdit ? '변경 사항 저장' : '예약 등록'}
           </button>
         </div>
       </div>
@@ -522,94 +993,106 @@ function ReservationModal({
 }
 
 // ----------------------------------------------------------------------------------
-// 반납 모달
+// 반납 확인 모달 (2종 필수 체크)
 // ----------------------------------------------------------------------------------
 
-function ReturnModal({
+function ReturnChecklistModal({
   reservation,
   onClose,
   onConfirm,
 }: {
   reservation: Reservation
   onClose: () => void
-  onConfirm: (id: string, info: ReturnInfo) => void
+  onConfirm: (id: string) => void
 }) {
-  const [sdCardFormatted, setSdCardFormatted] = useState(false)
-  const [batteryCharged, setBatteryCharged] = useState(false)
-  const [note, setNote] = useState('')
-
-  const cam = getCamera(reservation.cameraId)
+  const { getCameraById, getAccessoryById } = useAppData()
+  const [batteryChecked, setBatteryChecked] = useState(false)
+  const [cleanupChecked, setCleanupChecked] = useState(false)
+  const cam = getCameraById(reservation.cameraId)
+  const canConfirm = batteryChecked && cleanupChecked
 
   return (
-    <Modal title="장비 반납 처리" onClose={onClose}>
+    <Modal title="반납 확인" onClose={onClose}>
       <div className="space-y-5">
-        <div className="rounded-xl bg-slate-50 px-4 py-3">
-          <div className="mb-1 flex items-center gap-2">
-            <TeamBadge teamId={reservation.teamId} />
-            <span className="text-sm font-semibold text-slate-700">
-              {cam.label} ({cam.model})
-            </span>
-          </div>
-          <p className="text-xs text-slate-500">
-            {formatDateTime(reservation.startAt)} ~{' '}
-            {formatDateTime(reservation.endAt)}
+        <p className="text-base text-slate-600">
+          아래 대여 장비를 반납 처리하기 전, 두 항목을 모두 확인해주세요.
+        </p>
+
+        <div className="rounded-2xl bg-slate-50 px-4 py-3.5">
+          <p className="flex items-center gap-1.5 text-base font-bold text-slate-800">
+            <Video size={16} />
+            {cam.label} ({cam.model})
           </p>
+          {reservation.accessories.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {reservation.accessories.map((id) => {
+                const item = getAccessoryById(id)
+                return (
+                  <span
+                    key={id}
+                    className="flex items-center gap-1 rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-500"
+                  >
+                    <Tag size={11} />
+                    {formatAccessory(item)}
+                  </span>
+                )
+              })}
+            </div>
+          )}
         </div>
 
-        <div className="space-y-2">
-          <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 px-3 py-2.5 text-sm hover:border-slate-300">
+        <div className="space-y-2.5">
+          <label
+            className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3.5 transition ${
+              batteryChecked
+                ? 'border-emerald-400 bg-emerald-50'
+                : 'border-slate-200 hover:border-slate-300'
+            }`}
+          >
             <input
               type="checkbox"
-              checked={sdCardFormatted}
-              onChange={(e) => setSdCardFormatted(e.target.checked)}
-              className="h-4 w-4 rounded accent-indigo-600"
+              checked={batteryChecked}
+              onChange={(e) => setBatteryChecked(e.target.checked)}
+              className="h-5 w-5 rounded accent-emerald-600"
             />
-            SD카드 포맷 완료
+            <span className="flex items-center gap-1.5 text-base font-bold text-slate-700">
+              <Battery size={17} />
+              배터리 충전 완료
+            </span>
           </label>
-          <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 px-3 py-2.5 text-sm hover:border-slate-300">
+          <label
+            className={`flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3.5 transition ${
+              cleanupChecked
+                ? 'border-emerald-400 bg-emerald-50'
+                : 'border-slate-200 hover:border-slate-300'
+            }`}
+          >
             <input
               type="checkbox"
-              checked={batteryCharged}
-              onChange={(e) => setBatteryCharged(e.target.checked)}
-              className="h-4 w-4 rounded accent-indigo-600"
+              checked={cleanupChecked}
+              onChange={(e) => setCleanupChecked(e.target.checked)}
+              className="h-5 w-5 rounded accent-emerald-600"
             />
-            배터리 충전 완료
+            <span className="flex items-center gap-1.5 text-base font-bold text-slate-700">
+              <Package size={17} />
+              카메라 및 장비 정리 완료 (가방 정리/전원 OFF)
+            </span>
           </label>
-        </div>
-
-        <div>
-          <label className="mb-2 block text-sm font-semibold text-slate-700">
-            특이사항 메모
-          </label>
-          <textarea
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            rows={2}
-            placeholder="예) 렌즈 외관 스크래치 발견"
-            className="w-full resize-none rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
-          />
         </div>
 
         <div className="flex justify-end gap-2 pt-2">
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
-          >
+          <button onClick={onClose} className={SECONDARY_BTN}>
             취소
           </button>
           <button
-            onClick={() =>
-              onConfirm(reservation.id, {
-                sdCardFormatted,
-                batteryCharged,
-                note: note.trim(),
-                returnedAt: new Date().toISOString(),
-              })
-            }
-            className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+            onClick={() => onConfirm(reservation.id)}
+            disabled={!canConfirm}
+            className={`${PRIMARY_BTN} ${
+              canConfirm ? 'bg-emerald-600 hover:bg-emerald-700' : 'cursor-not-allowed bg-slate-300'
+            }`}
           >
-            <CheckCircle2 size={16} />
-            반납 처리
+            <CheckCircle2 size={18} />
+            반납 완료
           </button>
         </div>
       </div>
@@ -618,251 +1101,966 @@ function ReturnModal({
 }
 
 // ----------------------------------------------------------------------------------
-// 타임라인 뷰
+// 예약 상세 팝업
 // ----------------------------------------------------------------------------------
 
-function TimelineView({ reservations }: { reservations: Reservation[] }) {
-  const activeReservations = useMemo(
-    () =>
-      reservations
-        .filter((r) => r.status !== '취소됨')
-        .sort(
-          (a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime(),
-        ),
-    [reservations],
-  )
-
-  const byCamera = useMemo(() => {
-    const map: Record<CameraId, Reservation[]> = { A: [], B: [], C: [] }
-    for (const r of activeReservations) {
-      map[r.cameraId].push(r)
-    }
-    return map
-  }, [activeReservations])
-
-  if (activeReservations.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 py-16 text-slate-400">
-        <CalendarClock size={36} className="mb-2" />
-        <p>등록된 예약이 없습니다.</p>
-      </div>
-    )
-  }
+function ReservationDetailModal({
+  reservation,
+  myTeam,
+  isAdmin,
+  onClose,
+  onEdit,
+  onReturnClick,
+  onCancel,
+}: {
+  reservation: Reservation
+  myTeam: TeamId
+  isAdmin: boolean
+  onClose: () => void
+  onEdit: (r: Reservation) => void
+  onReturnClick: (r: Reservation) => void
+  onCancel: (id: string) => void
+}) {
+  const { getCameraById, getAccessoryById, getTeamLabel } = useAppData()
+  const cam = getCameraById(reservation.cameraId)
+  const canManage = isAdmin || reservation.teamId === myTeam
 
   return (
-    <div className="space-y-6">
-      {CAMERAS.map((cam) => (
-        <div key={cam.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="mb-3 flex items-center gap-2">
-            <Video size={17} className="text-slate-500" />
-            <h3 className="font-bold text-slate-800">{cam.label}</h3>
-            <span className="text-sm text-slate-400">{cam.model}</span>
-          </div>
-          {byCamera[cam.id].length === 0 ? (
-            <p className="py-3 text-sm text-slate-400">예약 없음</p>
+    <Modal title="예약 상세 정보" onClose={onClose}>
+      <div className="space-y-5">
+        <div className="flex flex-wrap items-center gap-2">
+          <TeamBadge teamId={reservation.teamId} />
+          <span className="flex items-center gap-1 text-base font-bold text-slate-800">
+            <Video size={15} />
+            {cam.label} ({cam.model})
+          </span>
+          <StatusBadge status={reservation.status} />
+          {reservation.isBroadcast && <BroadcastBadge />}
+        </div>
+
+        <div className="rounded-2xl bg-slate-50 px-4 py-3.5 text-base text-slate-600">
+          <p className="font-bold text-slate-700">
+            {formatDateTime(reservation.startAt)} ~ {formatDateTime(reservation.endAt)}
+          </p>
+          <p className="mt-1">{reservation.purpose}</p>
+        </div>
+
+        <div>
+          <p className="mb-1.5 text-base font-bold text-slate-700">부속 기자재</p>
+          {reservation.accessories.length === 0 ? (
+            <p className="text-sm text-slate-400">선택된 기자재 없음</p>
           ) : (
-            <div className="space-y-2">
-              {byCamera[cam.id].map((r) => {
-                const team = getTeam(r.teamId)
+            <div className="flex flex-wrap gap-1.5">
+              {reservation.accessories.map((id) => {
+                const item = getAccessoryById(id)
                 return (
-                  <div
-                    key={r.id}
-                    className={`flex flex-col gap-1 rounded-xl border-l-4 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between ${team.borderColor} ${team.softBg}`}
+                  <span
+                    key={id}
+                    className="flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-500"
                   >
-                    <div className="flex items-center gap-2">
-                      <TeamBadge teamId={r.teamId} />
-                      <span className="text-sm font-medium text-slate-700">
-                        {r.purpose}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-medium text-slate-500">
-                        {formatDateTime(r.startAt)} ~ {formatDateTime(r.endAt)}
-                      </span>
-                      <StatusBadge status={r.status} />
-                    </div>
-                  </div>
+                    <Tag size={11} />
+                    {formatAccessory(item)}
+                  </span>
                 )
               })}
             </div>
           )}
         </div>
-      ))}
+
+        <div>
+          <p className="mb-1.5 text-base font-bold text-slate-700">반납 여부</p>
+          {reservation.returnedAt ? (
+            <div className="flex flex-wrap items-center gap-1.5 rounded-xl bg-emerald-50 px-3.5 py-2.5 text-sm font-semibold text-emerald-700">
+              <CheckCircle2 size={14} />
+              반납 완료:{' '}
+              {new Date(reservation.returnedAt).toLocaleString('ko-KR', {
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false,
+              })}
+            </div>
+          ) : (
+            <p className="text-sm text-slate-400">
+              {reservation.status === '취소됨'
+                ? '취소된 예약입니다.'
+                : '아직 반납되지 않았습니다.'}
+            </p>
+          )}
+        </div>
+
+        {reservation.status === '대여중' && !canManage && (
+          <div className="flex items-center gap-2 rounded-xl bg-amber-50 px-4 py-3.5 text-sm font-semibold text-amber-700">
+            <AlertTriangle size={16} className="shrink-0" />
+            {getTeamLabel(reservation.teamId)}만 예약 변경 및 취소가 가능합니다.
+          </div>
+        )}
+
+        {reservation.status === '대여중' && canManage && (
+          <div className="flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-5">
+            {isAdmin && reservation.teamId !== myTeam && (
+              <span className="mr-auto flex items-center gap-1 self-center text-xs font-bold text-[#3182f6]">
+                <ShieldCheck size={14} />
+                관리자 권한으로 조작 중
+              </span>
+            )}
+            <button
+              onClick={() => onEdit(reservation)}
+              className="flex h-11 items-center gap-1.5 rounded-xl bg-slate-100 px-4 text-sm font-bold text-slate-700 hover:bg-slate-200"
+            >
+              <Pencil size={15} />
+              예약 변경
+            </button>
+            <button
+              onClick={() => onCancel(reservation.id)}
+              className="flex h-11 items-center gap-1.5 rounded-xl bg-red-50 px-4 text-sm font-bold text-red-600 hover:bg-red-100"
+            >
+              <X size={15} />
+              예약 취소
+            </button>
+            <button
+              onClick={() => onReturnClick(reservation)}
+              className="flex h-11 items-center gap-1.5 rounded-xl bg-emerald-600 px-4 text-sm font-bold text-white hover:bg-emerald-700"
+            >
+              <CheckCircle2 size={15} />
+              반납 처리
+            </button>
+          </div>
+        )}
+      </div>
+    </Modal>
+  )
+}
+
+// ----------------------------------------------------------------------------------
+// 월간 달력 뷰
+// ----------------------------------------------------------------------------------
+
+function CalendarView({
+  reservations,
+  onDayClick,
+  onChipClick,
+}: {
+  reservations: Reservation[]
+  onDayClick: (dateKey: string) => void
+  onChipClick: (reservation: Reservation) => void
+}) {
+  const { cameras, getTeamLabel, getCameraById } = useAppData()
+  const today = new Date()
+  const [cursor, setCursor] = useState(
+    () => new Date(today.getFullYear(), today.getMonth(), 1),
+  )
+  const [cameraFilter, setCameraFilter] = useState<'전체' | CameraId>('전체')
+
+  const year = cursor.getFullYear()
+  const month = cursor.getMonth()
+  const todayKey = toDateKey(today)
+
+  const gridDays = useMemo(() => getCalendarGridDays(year, month), [year, month])
+
+  const visibleReservations = useMemo(
+    () =>
+      reservations.filter(
+        (r) =>
+          r.status !== '취소됨' &&
+          (cameraFilter === '전체' || r.cameraId === cameraFilter),
+      ),
+    [reservations, cameraFilter],
+  )
+
+  function goToPrevMonth() {
+    setCursor((c) => new Date(c.getFullYear(), c.getMonth() - 1, 1))
+  }
+  function goToNextMonth() {
+    setCursor((c) => new Date(c.getFullYear(), c.getMonth() + 1, 1))
+  }
+  function goToToday() {
+    setCursor(new Date(today.getFullYear(), today.getMonth(), 1))
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className={`flex flex-wrap items-center gap-3 p-3.5 ${CARD}`}>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={goToPrevMonth}
+            className="rounded-xl p-2 text-slate-500 hover:bg-slate-100"
+            aria-label="이전 달"
+          >
+            <ChevronLeft size={20} />
+          </button>
+          <span className="w-32 text-center text-lg font-extrabold text-slate-800">
+            {year}년 {month + 1}월
+          </span>
+          <button
+            onClick={goToNextMonth}
+            className="rounded-xl p-2 text-slate-500 hover:bg-slate-100"
+            aria-label="다음 달"
+          >
+            <ChevronRight size={20} />
+          </button>
+          <button
+            onClick={goToToday}
+            className="rounded-xl border border-slate-200 px-3 py-1.5 text-sm font-bold text-slate-600 hover:bg-slate-50"
+          >
+            오늘
+          </button>
+        </div>
+
+        <div className="ml-auto flex flex-wrap gap-1.5">
+          <button
+            onClick={() => setCameraFilter('전체')}
+            className={`rounded-full border px-3.5 py-1.5 text-sm font-bold transition ${
+              cameraFilter === '전체'
+                ? 'border-[#3182f6] bg-[#3182f6] text-white'
+                : 'border-slate-200 text-slate-500 hover:border-slate-300'
+            }`}
+          >
+            전체 보기
+          </button>
+          {cameras.map((cam) => (
+            <button
+              key={cam.id}
+              onClick={() => setCameraFilter(cam.id)}
+              className={`rounded-full border px-3.5 py-1.5 text-sm font-bold transition ${
+                cameraFilter === cam.id
+                  ? 'border-[#3182f6] bg-[#3182f6] text-white'
+                  : 'border-slate-200 text-slate-500 hover:border-slate-300'
+              }`}
+            >
+              {cam.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className={`overflow-hidden ${CARD}`}>
+        <div className="grid grid-cols-7 border-b border-slate-100 bg-slate-50/70">
+          {WEEKDAY_LABELS.map((w, i) => (
+            <div
+              key={w}
+              className={`px-2 py-2.5 text-center text-sm font-bold ${
+                i === 0 ? 'text-red-500' : i === 6 ? 'text-blue-500' : 'text-slate-500'
+              }`}
+            >
+              {w}
+            </div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-7">
+          {gridDays.map((day) => {
+            const dateKey = toDateKey(day)
+            const isCurrentMonth = day.getMonth() === month
+            const isToday = dateKey === todayKey
+            const dayReservations = visibleReservations.filter((r) =>
+              reservationOverlapsDay(r, day),
+            )
+
+            return (
+              <div
+                key={dateKey}
+                onClick={() => onDayClick(dateKey)}
+                className={`min-h-[112px] cursor-pointer border-b border-r border-slate-100 p-1.5 transition hover:bg-slate-50 sm:min-h-[132px] ${
+                  isCurrentMonth ? 'bg-white' : 'bg-slate-50/60'
+                }`}
+              >
+                <span
+                  className={`inline-flex h-8 w-8 items-center justify-center rounded-full text-base font-bold ${
+                    isToday
+                      ? 'text-white'
+                      : isCurrentMonth
+                        ? 'text-slate-700'
+                        : 'text-slate-300'
+                  }`}
+                  style={isToday ? { backgroundColor: TOSS_BLUE } : undefined}
+                >
+                  {day.getDate()}
+                </span>
+
+                <div className="mt-1 max-h-[78px] space-y-1 overflow-y-auto pr-0.5 sm:max-h-[92px]">
+                  {dayReservations.map((r) => {
+                    const team = getTeam(r.teamId)
+                    const teamLabel = getTeamLabel(r.teamId)
+                    const camLabel = getCameraById(r.cameraId).model
+                    return (
+                      <button
+                        key={r.id}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onChipClick(r)
+                        }}
+                        title={`[${teamLabel}] ${camLabel} (${formatTimeOnly(r.startAt)}~${formatTimeOnly(r.endAt)})${
+                          r.isBroadcast ? ' · 방송국' : ''
+                        }`}
+                        className={`flex w-full items-center gap-1 truncate rounded-lg px-1.5 py-1 text-left text-xs font-bold text-white sm:text-sm ${team.color} hover:opacity-90`}
+                      >
+                        <span className="truncate">
+                          [{teamLabel}] {camLabel} ({formatTimeOnly(r.startAt)}~
+                          {formatTimeOnly(r.endAt)})
+                        </span>
+                        {r.isBroadcast && (
+                          <span className="flex shrink-0 items-center gap-0.5 rounded bg-white/25 px-1 py-0.5 text-[9px] font-bold">
+                            <Radio size={9} />
+                            방송국
+                          </span>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-3 px-1 text-sm font-medium text-slate-500">
+        {TEAMS.map((t) => (
+          <span key={t.id} className="flex items-center gap-1.5">
+            <span className={`h-2.5 w-2.5 rounded-full ${t.color}`} />
+            {getTeamLabel(t.id)}
+          </span>
+        ))}
+      </div>
     </div>
   )
 }
 
 // ----------------------------------------------------------------------------------
-// 목록 관리 뷰
+// 예약 내역 한 줄
 // ----------------------------------------------------------------------------------
 
-function ListView({
+function ReservationRow({
+  reservation,
+  showCamera,
+  onClick,
+}: {
+  reservation: Reservation
+  showCamera?: boolean
+  onClick: () => void
+}) {
+  const { getCameraById, getAccessoryById } = useAppData()
+  const team = getTeam(reservation.teamId)
+  const cam = getCameraById(reservation.cameraId)
+  const now = Date.now()
+  const start = new Date(reservation.startAt).getTime()
+  const end = new Date(reservation.endAt).getTime()
+  const timing =
+    reservation.status === '취소됨'
+      ? null
+      : end < now
+        ? '지난 예약'
+        : start > now
+          ? '예정'
+          : '진행 중'
+
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full rounded-xl border-l-4 px-4 py-3 text-left transition hover:brightness-95 ${team.borderColor} ${team.softBg}`}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <TeamBadge teamId={reservation.teamId} size="sm" />
+        {showCamera && (
+          <span className="flex items-center gap-1 text-sm font-bold text-slate-700">
+            <Video size={13} />
+            {cam.label}
+          </span>
+        )}
+        <StatusBadge status={reservation.status} />
+        {reservation.isBroadcast && <BroadcastBadge />}
+        {timing && (
+          <span className="text-xs font-bold text-slate-400">{timing}</span>
+        )}
+      </div>
+      <p className="mt-1.5 text-sm font-bold text-slate-600">
+        {formatDateTime(reservation.startAt)} ~ {formatDateTime(reservation.endAt)}
+      </p>
+      <p className="mt-0.5 text-sm text-slate-500">{reservation.purpose}</p>
+      {reservation.accessories.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {reservation.accessories.map((id) => (
+            <span
+              key={id}
+              className="rounded-full bg-white/70 px-1.5 py-0.5 text-xs text-slate-500"
+            >
+              {formatAccessory(getAccessoryById(id))}
+            </span>
+          ))}
+        </div>
+      )}
+    </button>
+  )
+}
+
+// ----------------------------------------------------------------------------------
+// 장비별 현황 뷰
+// ----------------------------------------------------------------------------------
+
+function getAccessoryIcon(category: string) {
+  if (category.includes('배터리')) return Battery
+  if (category.includes('마이크')) return Mic
+  if (category.includes('조명')) return Lightbulb
+  return Package
+}
+
+function EquipmentStatusView({
   reservations,
-  onReturn,
-  onCancel,
-  onDelete,
+  onSelect,
 }: {
   reservations: Reservation[]
-  onReturn: (r: Reservation) => void
-  onCancel: (id: string) => void
-  onDelete: (id: string) => void
+  onSelect: (r: Reservation) => void
 }) {
-  const [statusFilter, setStatusFilter] = useState<'전체' | ReservationStatus>(
-    '전체',
-  )
-  const [teamFilter, setTeamFilter] = useState<'전체' | TeamId>('전체')
+  const { cameras, accessories } = useAppData()
+  const now = Date.now()
 
-  const filtered = useMemo(() => {
-    return reservations
-      .filter((r) => statusFilter === '전체' || r.status === statusFilter)
-      .filter((r) => teamFilter === '전체' || r.teamId === teamFilter)
-      .sort(
-        (a, b) => new Date(b.startAt).getTime() - new Date(a.startAt).getTime(),
-      )
-  }, [reservations, statusFilter, teamFilter])
+  return (
+    <div className="space-y-8">
+      <div className="space-y-4">
+        <h2 className="flex items-center gap-1.5 text-xl font-extrabold text-slate-800">
+          <Video size={18} />
+          카메라
+        </h2>
+        {cameras.length === 0 && (
+          <div className={`flex flex-col items-center justify-center py-16 text-slate-400 ${CARD}`}>
+            <Video size={36} className="mb-2" />
+            <p className="text-base">
+              등록된 카메라가 없습니다. 관리자 설정에서 카메라를 추가해주세요.
+            </p>
+          </div>
+        )}
+        {cameras.map((cam) => {
+          const history = reservations
+            .filter((r) => r.cameraId === cam.id && r.status !== '취소됨')
+            .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())
+          const inUse = history.some(
+            (r) =>
+              r.status === '대여중' &&
+              new Date(r.startAt).getTime() <= now &&
+              new Date(r.endAt).getTime() >= now,
+          )
+
+          return (
+            <div key={cam.id} className={`p-5 ${CARD}`}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-3">
+                  <div className="rounded-2xl bg-slate-100 p-2.5 text-slate-600">
+                    <Video size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-extrabold text-slate-800">{cam.label}</h3>
+                    <p className="text-sm text-slate-400">{cam.model}</p>
+                  </div>
+                </div>
+                <span
+                  className={`rounded-full px-3.5 py-1.5 text-sm font-bold ${
+                    inUse ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
+                  }`}
+                >
+                  {inUse ? '사용 중' : '대여 가능'}
+                </span>
+              </div>
+
+              <div className="mt-4 flex items-center gap-1.5 text-sm font-bold text-slate-500">
+                <History size={14} />
+                예약 히스토리 ({history.length}건)
+              </div>
+
+              {history.length === 0 ? (
+                <p className="mt-2 py-3 text-center text-base text-slate-400">
+                  예약 내역이 없습니다.
+                </p>
+              ) : (
+                <div className="mt-2 max-h-72 space-y-2 overflow-y-auto pr-1">
+                  {history.map((r) => (
+                    <ReservationRow key={r.id} reservation={r} onClick={() => onSelect(r)} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="space-y-4">
+        <h2 className="flex items-center gap-1.5 text-xl font-extrabold text-slate-800">
+          <Package size={18} />
+          부가 장비 (라벨 번호)
+        </h2>
+        {accessories.length === 0 && (
+          <div className={`flex flex-col items-center justify-center py-16 text-slate-400 ${CARD}`}>
+            <Package size={36} className="mb-2" />
+            <p className="text-base">등록된 부가 장비가 없습니다. 관리자 설정에서 추가해주세요.</p>
+          </div>
+        )}
+        {accessories.map((item) => {
+          const Icon = getAccessoryIcon(item.category)
+          const history = reservations
+            .filter((r) => r.accessories.includes(item.id) && r.status !== '취소됨')
+            .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())
+          const inUse = history.some(
+            (r) =>
+              r.status === '대여중' &&
+              new Date(r.startAt).getTime() <= now &&
+              new Date(r.endAt).getTime() >= now,
+          )
+
+          return (
+            <div key={item.id} className={`p-5 ${CARD}`}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-3">
+                  <div className="rounded-2xl bg-slate-100 p-2.5 text-slate-600">
+                    <Icon size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-extrabold text-slate-800">
+                      {formatAccessory(item)}
+                    </h3>
+                    <p className="text-sm text-slate-400">{item.category}</p>
+                  </div>
+                </div>
+                <span
+                  className={`rounded-full px-3.5 py-1.5 text-sm font-bold ${
+                    inUse ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
+                  }`}
+                >
+                  {inUse ? '사용 중' : '대여 가능'}
+                </span>
+              </div>
+
+              <div className="mt-4 flex items-center gap-1.5 text-sm font-bold text-slate-500">
+                <History size={14} />
+                예약 히스토리 ({history.length}건)
+              </div>
+
+              {history.length === 0 ? (
+                <p className="mt-2 py-3 text-center text-base text-slate-400">
+                  예약 내역이 없습니다.
+                </p>
+              ) : (
+                <div className="mt-2 max-h-72 space-y-2 overflow-y-auto pr-1">
+                  {history.map((r) => (
+                    <ReservationRow
+                      key={r.id}
+                      reservation={r}
+                      showCamera
+                      onClick={() => onSelect(r)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ----------------------------------------------------------------------------------
+// 조별 현황 뷰
+// ----------------------------------------------------------------------------------
+
+function TeamStatusView({
+  reservations,
+  onSelect,
+}: {
+  reservations: Reservation[]
+  onSelect: (r: Reservation) => void
+}) {
+  const { getTeamLabel, renameTeam } = useAppData()
+  const [activeTeam, setActiveTeam] = useState<TeamId>('1조')
+  const [editingTeam, setEditingTeam] = useState<TeamId | null>(null)
+  const [draftName, setDraftName] = useState('')
+  const team = getTeam(activeTeam)
+
+  const teamReservations = useMemo(
+    () =>
+      reservations
+        .filter((r) => r.teamId === activeTeam)
+        .sort((a, b) => new Date(b.startAt).getTime() - new Date(a.startAt).getTime()),
+    [reservations, activeTeam],
+  )
+
+  function startEdit(t: TeamId) {
+    setEditingTeam(t)
+    setDraftName(getTeamLabel(t))
+  }
+
+  function saveEdit(t: TeamId) {
+    const trimmed = draftName.trim()
+    if (trimmed) renameTeam(t, trimmed)
+    setEditingTeam(null)
+  }
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs font-semibold text-slate-500">상태</span>
-          <select
-            value={statusFilter}
-            onChange={(e) =>
-              setStatusFilter(e.target.value as '전체' | ReservationStatus)
-            }
-            className="rounded-lg border border-slate-300 px-2 py-1.5 text-sm focus:border-indigo-500 focus:outline-none"
-          >
-            <option value="전체">전체</option>
-            <option value="대여중">대여중</option>
-            <option value="반납완료">반납완료</option>
-            <option value="취소됨">취소됨</option>
-          </select>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs font-semibold text-slate-500">조</span>
-          <select
-            value={teamFilter}
-            onChange={(e) => setTeamFilter(e.target.value as '전체' | TeamId)}
-            className="rounded-lg border border-slate-300 px-2 py-1.5 text-sm focus:border-indigo-500 focus:outline-none"
-          >
-            <option value="전체">전체</option>
-            {TEAMS.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        <span className="ml-auto text-xs text-slate-400">
-          총 {filtered.length}건
-        </span>
-      </div>
+      <div className={`flex flex-wrap gap-2 p-3.5 ${CARD}`}>
+        {TEAMS.map((t) => {
+          const label = getTeamLabel(t.id)
+          const active = activeTeam === t.id
 
-      {filtered.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 py-16 text-slate-400">
-          <ListChecks size={36} className="mb-2" />
-          <p>조건에 맞는 예약이 없습니다.</p>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {filtered.map((r) => {
-            const cam = getCamera(r.cameraId)
+          if (editingTeam === t.id) {
             return (
               <div
-                key={r.id}
-                className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+                key={t.id}
+                className={`flex items-center gap-1 rounded-full border px-2 py-1 ${t.softBg} ${t.borderColor}`}
               >
-                <div className="flex flex-wrap items-center gap-2">
-                  <TeamBadge teamId={r.teamId} />
-                  <span className="flex items-center gap-1 text-sm font-bold text-slate-800">
-                    <Video size={14} />
-                    {cam.label}
-                  </span>
-                  <span className="text-xs text-slate-400">{cam.model}</span>
-                  <StatusBadge status={r.status} />
-                  <div className="ml-auto flex gap-2">
-                    {r.status === '대여중' && (
-                      <>
-                        <button
-                          onClick={() => onReturn(r)}
-                          className="flex items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
-                        >
-                          <CheckCircle2 size={14} />
-                          반납
-                        </button>
-                        <button
-                          onClick={() => onCancel(r.id)}
-                          className="flex items-center gap-1 rounded-lg bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100"
-                        >
-                          <X size={14} />
-                          취소
-                        </button>
-                      </>
-                    )}
-                    <button
-                      onClick={() => onDelete(r.id)}
-                      className="flex items-center gap-1 rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-500 hover:bg-slate-100"
-                    >
-                      <Trash2 size={14} />
-                      삭제
-                    </button>
-                  </div>
-                </div>
-
-                <p className="mt-2 text-sm text-slate-600">{r.purpose}</p>
-                <p className="mt-1 text-xs text-slate-400">
-                  {formatDateTime(r.startAt)} ~ {formatDateTime(r.endAt)}
-                </p>
-
-                {r.accessories.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {r.accessories.map((a) => (
-                      <span
-                        key={a}
-                        className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500"
-                      >
-                        {a}
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                {r.returnInfo && (
-                  <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
-                    <span className="flex items-center gap-1">
-                      <CheckCircle2
-                        size={13}
-                        className={
-                          r.returnInfo.sdCardFormatted
-                            ? 'text-emerald-500'
-                            : 'text-slate-300'
-                        }
-                      />
-                      SD카드 포맷
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <Battery
-                        size={13}
-                        className={
-                          r.returnInfo.batteryCharged
-                            ? 'text-emerald-500'
-                            : 'text-slate-300'
-                        }
-                      />
-                      배터리 충전
-                    </span>
-                    {r.returnInfo.note && (
-                      <span>메모: {r.returnInfo.note}</span>
-                    )}
-                  </div>
-                )}
+                <input
+                  autoFocus
+                  value={draftName}
+                  onChange={(e) => setDraftName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') saveEdit(t.id)
+                    if (e.key === 'Escape') setEditingTeam(null)
+                  }}
+                  maxLength={20}
+                  className="w-24 rounded border border-slate-300 bg-white px-1.5 py-1 text-base focus:border-[#3182f6] focus:outline-none"
+                />
+                <button
+                  onClick={() => saveEdit(t.id)}
+                  className="rounded p-1 text-emerald-600 hover:bg-white"
+                  aria-label="이름 저장"
+                >
+                  <Check size={15} />
+                </button>
+                <button
+                  onClick={() => setEditingTeam(null)}
+                  className="rounded p-1 text-slate-400 hover:bg-white"
+                  aria-label="편집 취소"
+                >
+                  <X size={15} />
+                </button>
               </div>
             )
-          })}
+          }
+
+          return (
+            <div
+              key={t.id}
+              className={`flex items-center gap-1 rounded-full border py-1.5 pl-4 pr-1.5 text-base font-bold transition ${
+                active
+                  ? `${t.color} border-transparent text-white`
+                  : `${t.softBg} ${t.textColor} ${t.borderColor}`
+              }`}
+            >
+              <button onClick={() => setActiveTeam(t.id)}>{label}</button>
+              <button
+                onClick={() => startEdit(t.id)}
+                className="rounded-full p-1.5 opacity-70 hover:bg-black/10 hover:opacity-100"
+                aria-label={`${label} 이름 수정`}
+              >
+                <Pencil size={13} />
+              </button>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className={`rounded-2xl border-2 p-5 ${team.borderColor} ${team.softBg}`}>
+        <div className="flex items-center justify-between">
+          <h3 className={`text-xl font-extrabold ${team.textColor}`}>
+            {getTeamLabel(activeTeam)} 예약 내역
+          </h3>
+          <span className="text-sm font-bold text-slate-500">
+            총 {teamReservations.length}건
+          </span>
         </div>
-      )}
+
+        {teamReservations.length === 0 ? (
+          <p className="mt-6 py-6 text-center text-base text-slate-400">
+            등록된 예약이 없습니다.
+          </p>
+        ) : (
+          <div className="mt-3 space-y-2">
+            {teamReservations.map((r) => (
+              <ReservationRow
+                key={r.id}
+                reservation={r}
+                showCamera
+                onClick={() => onSelect(r)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     </div>
+  )
+}
+
+// ----------------------------------------------------------------------------------
+// 관리자 비밀번호 인증 모달
+// ----------------------------------------------------------------------------------
+
+function PasswordModal({
+  onClose,
+  onSuccess,
+}: {
+  onClose: () => void
+  onSuccess: () => void
+}) {
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+
+  function handleSubmit() {
+    if (password === ADMIN_PASSWORD) {
+      onSuccess()
+    } else {
+      setError('비밀번호가 일치하지 않습니다.')
+      setPassword('')
+    }
+  }
+
+  return (
+    <Modal title="관리자 인증" onClose={onClose}>
+      <div className="space-y-4">
+        <p className="text-base text-slate-500">
+          관리자 설정에 접근하려면 비밀번호를 입력하세요.
+        </p>
+        <input
+          type="password"
+          autoFocus
+          value={password}
+          onChange={(e) => {
+            setPassword(e.target.value)
+            setError('')
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') handleSubmit()
+          }}
+          placeholder="비밀번호 입력"
+          className={`${INPUT} h-12`}
+        />
+        {error && (
+          <div className="flex items-center gap-2 rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-600">
+            <AlertTriangle size={16} />
+            {error}
+          </div>
+        )}
+        <div className="flex justify-end gap-2 pt-1">
+          <button onClick={onClose} className={SECONDARY_BTN}>
+            취소
+          </button>
+          <button
+            onClick={handleSubmit}
+            className={PRIMARY_BTN}
+            style={{ backgroundColor: TOSS_BLUE }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = TOSS_BLUE_HOVER)}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = TOSS_BLUE)}
+          >
+            확인
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ----------------------------------------------------------------------------------
+// 관리자 설정 패널
+// ----------------------------------------------------------------------------------
+
+function AdminPanel({
+  onClose,
+  onLogout,
+}: {
+  onClose: () => void
+  onLogout: () => void
+}) {
+  const {
+    cameras,
+    accessories,
+    addCamera,
+    removeCamera,
+    addAccessory,
+    removeAccessory,
+    confirmAction,
+  } = useAppData()
+  const [newCameraLabel, setNewCameraLabel] = useState('')
+  const [newCameraModel, setNewCameraModel] = useState('')
+  const [newAccessoryCategory, setNewAccessoryCategory] = useState('')
+  const [newAccessoryLabel, setNewAccessoryLabel] = useState('')
+  const [error, setError] = useState('')
+
+  function handleAddCamera() {
+    if (!newCameraLabel.trim() || !newCameraModel.trim()) {
+      setError('장비 식별 코드와 장비명을 모두 입력해주세요.')
+      return
+    }
+    addCamera(newCameraLabel.trim(), newCameraModel.trim())
+    setNewCameraLabel('')
+    setNewCameraModel('')
+    setError('')
+  }
+
+  function handleRemoveCamera(cam: CameraInfo) {
+    confirmAction({
+      message: `"${cam.label}" 장비를 삭제하시겠습니까? 이 장비를 참조하는 기존 예약 기록은 남아있지만, 더 이상 새 예약에 선택할 수 없습니다.`,
+      confirmLabel: '삭제',
+      danger: true,
+      onConfirm: () => removeCamera(cam.id),
+    })
+  }
+
+  function handleAddAccessory() {
+    const category = newAccessoryCategory.trim()
+    const label = newAccessoryLabel.trim()
+    if (!category || !label) {
+      setError('품목명과 라벨 관리번호를 모두 입력해주세요.')
+      return
+    }
+    if (accessories.some((a) => a.label.toLowerCase() === label.toLowerCase())) {
+      setError('이미 등록된 라벨 번호입니다.')
+      return
+    }
+    addAccessory(category, label)
+    setNewAccessoryCategory('')
+    setNewAccessoryLabel('')
+    setError('')
+  }
+
+  function handleRemoveAccessory(item: AccessoryItem) {
+    confirmAction({
+      message: `"${formatAccessory(item)}" 장비를 삭제하시겠습니까? 이 장비를 참조하는 기존 예약 기록은 남아있지만, 더 이상 새 예약에 선택할 수 없습니다.`,
+      confirmLabel: '삭제',
+      danger: true,
+      onConfirm: () => removeAccessory(item.id),
+    })
+  }
+
+  return (
+    <Modal title="관리자 설정" onClose={onClose}>
+      <div className="space-y-7">
+        <div className="flex justify-end">
+          <button
+            onClick={onLogout}
+            className="flex items-center gap-1 rounded-xl bg-slate-100 px-3.5 py-2 text-sm font-bold text-slate-600 hover:bg-slate-200"
+          >
+            <LogOut size={14} />
+            로그아웃
+          </button>
+        </div>
+
+        <div>
+          <h3 className="mb-2.5 flex items-center gap-1.5 text-lg font-extrabold text-slate-700">
+            <Video size={17} />
+            카메라 관리
+          </h3>
+          <div className="space-y-2">
+            {cameras.length === 0 && (
+              <p className="text-base text-slate-400">등록된 카메라가 없습니다.</p>
+            )}
+            {cameras.map((cam) => (
+              <div
+                key={cam.id}
+                className="flex items-center justify-between rounded-xl border border-slate-200 px-4 py-2.5"
+              >
+                <div>
+                  <p className="text-base font-bold text-slate-700">{cam.label}</p>
+                  <p className="text-sm text-slate-400">{cam.model}</p>
+                </div>
+                <button
+                  onClick={() => handleRemoveCamera(cam)}
+                  className="rounded-xl p-2 text-red-500 hover:bg-red-50"
+                  aria-label={`${cam.label} 삭제`}
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+            <input
+              value={newCameraLabel}
+              onChange={(e) => setNewCameraLabel(e.target.value)}
+              placeholder="장비 식별 코드 (예: Camera D)"
+              className={`${INPUT} h-12 flex-1`}
+            />
+            <input
+              value={newCameraModel}
+              onChange={(e) => setNewCameraModel(e.target.value)}
+              placeholder="장비명 (예: Sony A7M4)"
+              className={`${INPUT} h-12 flex-1`}
+            />
+            <button
+              onClick={handleAddCamera}
+              className={PRIMARY_BTN}
+              style={{ backgroundColor: TOSS_BLUE }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = TOSS_BLUE_HOVER)}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = TOSS_BLUE)}
+            >
+              <Plus size={16} />
+              추가
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <h3 className="mb-2.5 flex items-center gap-1.5 text-lg font-extrabold text-slate-700">
+            <Tag size={17} />
+            부가 장비 관리 (라벨 번호)
+          </h3>
+          <div className="space-y-2">
+            {accessories.length === 0 && (
+              <p className="text-base text-slate-400">등록된 기자재가 없습니다.</p>
+            )}
+            {accessories.map((item) => (
+              <div
+                key={item.id}
+                className="flex items-center justify-between rounded-xl border border-slate-200 px-4 py-2.5"
+              >
+                <div>
+                  <p className="text-base font-bold text-slate-700">
+                    {formatAccessory(item)}
+                  </p>
+                  <p className="text-sm text-slate-400">{item.category}</p>
+                </div>
+                <button
+                  onClick={() => handleRemoveAccessory(item)}
+                  className="rounded-xl p-2 text-red-500 hover:bg-red-50"
+                  aria-label={`${formatAccessory(item)} 삭제`}
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+            <input
+              value={newAccessoryCategory}
+              onChange={(e) => setNewAccessoryCategory(e.target.value)}
+              placeholder="품목명 (예: SD카드)"
+              className={`${INPUT} h-12 flex-1`}
+            />
+            <input
+              value={newAccessoryLabel}
+              onChange={(e) => setNewAccessoryLabel(e.target.value)}
+              placeholder="라벨 관리번호 (예: SD-03)"
+              className={`${INPUT} h-12 flex-1`}
+            />
+            <button
+              onClick={handleAddAccessory}
+              className={PRIMARY_BTN}
+              style={{ backgroundColor: TOSS_BLUE }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = TOSS_BLUE_HOVER)}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = TOSS_BLUE)}
+            >
+              <Plus size={16} />
+              추가
+            </button>
+          </div>
+        </div>
+
+        {error && (
+          <div className="flex items-center gap-2 rounded-xl bg-red-50 px-4 py-3 text-sm font-medium text-red-600">
+            <AlertTriangle size={16} />
+            {error}
+          </div>
+        )}
+      </div>
+    </Modal>
   )
 }
 
@@ -871,150 +2069,342 @@ function ListView({
 // ----------------------------------------------------------------------------------
 
 export default function App() {
-  const [reservations, setReservations] = useState<Reservation[]>([])
-  const [tab, setTab] = useState<'timeline' | 'list'>('timeline')
-  const [showReservationModal, setShowReservationModal] = useState(false)
+  const [reservations, setReservations] = useState<Reservation[]>(loadReservations)
+  const [teamNames, setTeamNames] = useState<Record<TeamId, string>>(loadTeamNames)
+  const [cameras, setCameras] = useState<CameraInfo[]>(loadCameras)
+  const [accessories, setAccessories] = useState<AccessoryItem[]>(loadAccessories)
+  const [myTeam, setMyTeam] = useState<TeamId>(loadMyTeam)
+  const [tab, setTab] = useState<'calendar' | 'equipment' | 'team'>('calendar')
+  const [reservationModalState, setReservationModalState] =
+    useState<ReservationModalState | null>(null)
+  const [detailTarget, setDetailTarget] = useState<Reservation | null>(null)
   const [returnTarget, setReturnTarget] = useState<Reservation | null>(null)
+  const [confirmDialog, setConfirmDialog] = useState<{
+    message: string
+    confirmLabel?: string
+    danger?: boolean
+    onConfirm: () => void
+  } | null>(null)
+  const [adminAuthed, setAdminAuthed] = useState(
+    () => sessionStorage.getItem(ADMIN_SESSION_KEY) === 'true',
+  )
+  const [showPasswordModal, setShowPasswordModal] = useState(false)
+  const [showAdminPanel, setShowAdminPanel] = useState(false)
 
   useEffect(() => {
-    setReservations(loadReservations())
-  }, [])
-
-  useEffect(() => {
-    if (reservations.length > 0 || localStorage.getItem(STORAGE_KEY)) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(reservations))
-    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(reservations))
   }, [reservations])
+
+  useEffect(() => {
+    localStorage.setItem(TEAM_NAMES_STORAGE_KEY, JSON.stringify(teamNames))
+  }, [teamNames])
+
+  useEffect(() => {
+    localStorage.setItem(CAMERAS_STORAGE_KEY, JSON.stringify(cameras))
+  }, [cameras])
+
+  useEffect(() => {
+    localStorage.setItem(ACCESSORIES_STORAGE_KEY, JSON.stringify(accessories))
+  }, [accessories])
+
+  useEffect(() => {
+    localStorage.setItem(MY_TEAM_STORAGE_KEY, myTeam)
+  }, [myTeam])
 
   const availableCameraCount = useMemo(() => {
     const now = Date.now()
+    const cameraIds = new Set(cameras.map((c) => c.id))
     const busy = new Set(
       reservations
         .filter(
           (r) =>
             r.status === '대여중' &&
+            cameraIds.has(r.cameraId) &&
             new Date(r.startAt).getTime() <= now &&
             new Date(r.endAt).getTime() >= now,
         )
         .map((r) => r.cameraId),
     )
-    return CAMERAS.length - busy.size
-  }, [reservations])
+    return cameras.length - busy.size
+  }, [reservations, cameras])
 
-  function handleAddReservation(reservation: Reservation) {
-    setReservations((prev) => [...prev, reservation])
-    setShowReservationModal(false)
+  function handleSaveReservation(reservation: Reservation) {
+    setReservations((prev) => {
+      const exists = prev.some((r) => r.id === reservation.id)
+      return exists
+        ? prev.map((r) => (r.id === reservation.id ? reservation : r))
+        : [...prev, reservation]
+    })
+    setReservationModalState(null)
+    setDetailTarget(null)
   }
 
-  function handleReturnConfirm(id: string, info: ReturnInfo) {
+  function openNewReservation(presetDate?: string) {
+    setReservationModalState({ mode: 'create', presetDate })
+  }
+
+  function openEditReservation(reservation: Reservation) {
+    setReservationModalState({ mode: 'edit', reservation })
+    setDetailTarget(null)
+  }
+
+  function handleReturnConfirmed(id: string) {
     setReservations((prev) =>
       prev.map((r) =>
-        r.id === id ? { ...r, status: '반납완료', returnInfo: info } : r,
+        r.id === id
+          ? { ...r, status: '반납완료', returnedAt: new Date().toISOString() }
+          : r,
       ),
     )
     setReturnTarget(null)
+    setDetailTarget(null)
   }
 
   function handleCancel(id: string) {
-    if (!confirm('이 예약을 취소하시겠습니까?')) return
-    setReservations((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, status: '취소됨' } : r)),
+    setConfirmDialog({
+      message: '이 예약을 취소하시겠습니까?',
+      confirmLabel: '예약 취소',
+      danger: true,
+      onConfirm: () => {
+        setReservations((prev) =>
+          prev.map((r) => (r.id === id ? { ...r, status: '취소됨' } : r)),
+        )
+        setDetailTarget(null)
+      },
+    })
+  }
+
+  function getTeamLabel(id: TeamId): string {
+    return teamNames[id] ?? id
+  }
+
+  function getCameraById(id: string): CameraInfo {
+    return cameras.find((c) => c.id === id) ?? { id, label: '삭제된 장비', model: '' }
+  }
+
+  function getAccessoryById(id: AccessoryId): AccessoryItem {
+    return (
+      accessories.find((a) => a.id === id) ?? {
+        id,
+        category: '삭제된 장비',
+        label: id,
+      }
     )
   }
 
-  function handleDelete(id: string) {
-    if (!confirm('이 예약 기록을 완전히 삭제하시겠습니까?')) return
-    setReservations((prev) => prev.filter((r) => r.id !== id))
+  function renameTeam(id: TeamId, name: string) {
+    setTeamNames((prev) => ({ ...prev, [id]: name }))
+  }
+
+  function addCamera(label: string, model: string) {
+    setCameras((prev) => [...prev, { id: generateId(), label, model }])
+  }
+
+  function removeCamera(id: string) {
+    setCameras((prev) => prev.filter((c) => c.id !== id))
+  }
+
+  function addAccessory(category: string, label: string) {
+    setAccessories((prev) => [...prev, { id: generateId(), category, label }])
+  }
+
+  function removeAccessory(id: AccessoryId) {
+    setAccessories((prev) => prev.filter((a) => a.id !== id))
+  }
+
+  function handleAdminLogin() {
+    setAdminAuthed(true)
+    sessionStorage.setItem(ADMIN_SESSION_KEY, 'true')
+    setShowPasswordModal(false)
+    setShowAdminPanel(true)
+  }
+
+  function handleAdminLogout() {
+    setAdminAuthed(false)
+    sessionStorage.removeItem(ADMIN_SESSION_KEY)
+    setShowAdminPanel(false)
+  }
+
+  const appDataValue: AppDataContextValue = {
+    teamNames,
+    cameras,
+    accessories,
+    myTeam,
+    isAdmin: adminAuthed,
+    getTeamLabel,
+    getCameraById,
+    getAccessoryById,
+    renameTeam,
+    addCamera,
+    removeCamera,
+    addAccessory,
+    removeAccessory,
+    confirmAction: setConfirmDialog,
   }
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-4xl flex-wrap items-center gap-3 px-4 py-4">
-          <div className="flex items-center gap-2">
-            <div className="rounded-xl bg-indigo-600 p-2 text-white">
-              <Camera size={20} />
+    <AppDataContext.Provider value={appDataValue}>
+      <div className="min-h-screen" style={{ backgroundColor: TOSS_BG }}>
+        <header className="border-b border-slate-200/70 bg-white">
+          <div className="mx-auto flex max-w-4xl flex-wrap items-center gap-3 px-4 py-5">
+            <div className="flex items-center gap-2.5">
+              <div className="rounded-2xl p-2.5 text-white" style={{ backgroundColor: TOSS_BLUE }}>
+                <Camera size={22} />
+              </div>
+              <div>
+                <h1 className="text-2xl font-extrabold leading-tight text-slate-900 sm:text-3xl">
+                  영상 촬영 장비 예약 관리
+                </h1>
+                <p className="text-sm text-slate-400">
+                  지금 대여 가능 카메라 {availableCameraCount} / {cameras.length}
+                </p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-lg font-bold leading-tight text-slate-800">
-                영상 촬영 장비 예약 관리
-              </h1>
-              <p className="text-xs text-slate-400">
-                지금 대여 가능 카메라 {availableCameraCount} / {CAMERAS.length}
-              </p>
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              <MyTeamSwitcher myTeam={myTeam} onChange={setMyTeam} />
+              <button
+                onClick={() =>
+                  adminAuthed ? setShowAdminPanel(true) : setShowPasswordModal(true)
+                }
+                className={`${SECONDARY_BTN} ${adminAuthed ? 'border-[#3182f6] text-[#3182f6]' : ''}`}
+              >
+                {adminAuthed ? <Unlock size={17} /> : <Lock size={17} />}
+                관리자 모드
+              </button>
+              <button
+                onClick={() => openNewReservation()}
+                className={PRIMARY_BTN}
+                style={{ backgroundColor: TOSS_BLUE }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = TOSS_BLUE_HOVER)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = TOSS_BLUE)}
+              >
+                <Plus size={18} />
+                새 예약 등록
+              </button>
             </div>
           </div>
-          <button
-            onClick={() => setShowReservationModal(true)}
-            className="ml-auto flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-700"
-          >
-            <Plus size={17} />
-            새 예약 등록
-          </button>
-        </div>
-      </header>
+        </header>
 
-      <main className="mx-auto max-w-4xl px-4 py-6">
-        <div className="mb-5 flex gap-2 rounded-xl bg-white p-1.5 shadow-sm">
-          <button
-            onClick={() => setTab('timeline')}
-            className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-2 text-sm font-semibold transition ${
-              tab === 'timeline'
-                ? 'bg-indigo-600 text-white'
-                : 'text-slate-500 hover:bg-slate-100'
-            }`}
-          >
-            <CalendarClock size={16} />
-            타임라인 뷰
-          </button>
-          <button
-            onClick={() => setTab('list')}
-            className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-2 text-sm font-semibold transition ${
-              tab === 'list'
-                ? 'bg-indigo-600 text-white'
-                : 'text-slate-500 hover:bg-slate-100'
-            }`}
-          >
-            <ListChecks size={16} />
-            목록 관리 뷰
-          </button>
-        </div>
+        <main className="mx-auto max-w-4xl px-4 py-6">
+          <div className={`mb-5 flex gap-1.5 p-1.5 ${CARD}`}>
+            <button
+              onClick={() => setTab('calendar')}
+              className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2.5 text-base font-bold transition ${
+                tab === 'calendar' ? 'text-white' : 'text-slate-500 hover:bg-slate-100'
+              }`}
+              style={tab === 'calendar' ? { backgroundColor: TOSS_BLUE } : undefined}
+            >
+              <CalendarDays size={17} />
+              달력 뷰
+            </button>
+            <button
+              onClick={() => setTab('equipment')}
+              className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2.5 text-base font-bold transition ${
+                tab === 'equipment' ? 'text-white' : 'text-slate-500 hover:bg-slate-100'
+              }`}
+              style={tab === 'equipment' ? { backgroundColor: TOSS_BLUE } : undefined}
+            >
+              <Video size={17} />
+              장비별 현황
+            </button>
+            <button
+              onClick={() => setTab('team')}
+              className={`flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2.5 text-base font-bold transition ${
+                tab === 'team' ? 'text-white' : 'text-slate-500 hover:bg-slate-100'
+              }`}
+              style={tab === 'team' ? { backgroundColor: TOSS_BLUE } : undefined}
+            >
+              <Users size={17} />
+              조별 현황
+            </button>
+          </div>
 
-        {tab === 'timeline' ? (
-          <TimelineView reservations={reservations} />
-        ) : (
-          <ListView
+          {tab === 'calendar' && (
+            <CalendarView
+              reservations={reservations}
+              onDayClick={(dateKey) => openNewReservation(dateKey)}
+              onChipClick={(r) => setDetailTarget(r)}
+            />
+          )}
+          {tab === 'equipment' && (
+            <EquipmentStatusView
+              reservations={reservations}
+              onSelect={(r) => setDetailTarget(r)}
+            />
+          )}
+          {tab === 'team' && (
+            <TeamStatusView
+              reservations={reservations}
+              onSelect={(r) => setDetailTarget(r)}
+            />
+          )}
+        </main>
+
+        <footer className="border-t border-slate-200/70 py-6 text-center text-sm text-slate-400">
+          <span className="flex items-center justify-center gap-1">
+            <Mic size={13} />
+            <Lightbulb size={13} />
+            모든 데이터는 브라우저 localStorage에 저장됩니다.
+          </span>
+        </footer>
+
+        {reservationModalState && (
+          <ReservationModal
             reservations={reservations}
-            onReturn={(r) => setReturnTarget(r)}
-            onCancel={handleCancel}
-            onDelete={handleDelete}
+            myTeam={myTeam}
+            state={reservationModalState}
+            onClose={() => setReservationModalState(null)}
+            onSubmit={handleSaveReservation}
           />
         )}
-      </main>
 
-      <footer className="border-t border-slate-200 py-6 text-center text-xs text-slate-400">
-        <span className="flex items-center justify-center gap-1">
-          <Mic size={12} />
-          <Lightbulb size={12} />
-          모든 데이터는 브라우저 localStorage에 저장됩니다.
-        </span>
-      </footer>
+        {detailTarget && (
+          <ReservationDetailModal
+            reservation={detailTarget}
+            myTeam={myTeam}
+            isAdmin={adminAuthed}
+            onClose={() => setDetailTarget(null)}
+            onEdit={openEditReservation}
+            onReturnClick={(r) => setReturnTarget(r)}
+            onCancel={handleCancel}
+          />
+        )}
 
-      {showReservationModal && (
-        <ReservationModal
-          reservations={reservations}
-          onClose={() => setShowReservationModal(false)}
-          onSubmit={handleAddReservation}
-        />
-      )}
+        {returnTarget && (
+          <ReturnChecklistModal
+            reservation={returnTarget}
+            onClose={() => setReturnTarget(null)}
+            onConfirm={handleReturnConfirmed}
+          />
+        )}
 
-      {returnTarget && (
-        <ReturnModal
-          reservation={returnTarget}
-          onClose={() => setReturnTarget(null)}
-          onConfirm={handleReturnConfirm}
-        />
-      )}
-    </div>
+        {confirmDialog && (
+          <ConfirmDialog
+            message={confirmDialog.message}
+            confirmLabel={confirmDialog.confirmLabel}
+            danger={confirmDialog.danger}
+            onCancel={() => setConfirmDialog(null)}
+            onConfirm={() => {
+              confirmDialog.onConfirm()
+              setConfirmDialog(null)
+            }}
+          />
+        )}
+
+        {showPasswordModal && (
+          <PasswordModal
+            onClose={() => setShowPasswordModal(false)}
+            onSuccess={handleAdminLogin}
+          />
+        )}
+
+        {showAdminPanel && (
+          <AdminPanel
+            onClose={() => setShowAdminPanel(false)}
+            onLogout={handleAdminLogout}
+          />
+        )}
+      </div>
+    </AppDataContext.Provider>
   )
 }
