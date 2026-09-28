@@ -33,6 +33,7 @@ import {
   DEFAULT_ACCESSORIES,
   DEFAULT_CAMERAS,
   DEFAULT_TEAM_NAMES,
+  normalizeReservation,
   type AccessoryId,
   type AccessoryItem,
   type CameraId,
@@ -185,6 +186,13 @@ function formatAccessory(item: AccessoryItem): string {
   return `${item.category} (${item.label})`
 }
 
+// 카메라 2대 이상 예약 시 달력/목록에 깔끔하게 요약해서 보여주기 위한 포맷터.
+function formatCameraSummary(cams: CameraInfo[]): string {
+  if (cams.length === 0) return '미지정'
+  if (cams.length <= 2) return cams.map((c) => c.model).join(', ')
+  return `${cams[0].model} 외 ${cams.length - 1}대`
+}
+
 function groupAccessoriesByCategory(
   items: AccessoryItem[],
 ): { category: string; items: AccessoryItem[] }[] {
@@ -216,7 +224,7 @@ function findCameraConflict(
   return reservations.find(
     (r) =>
       r.id !== excludeReservationId &&
-      r.cameraId === cameraId &&
+      r.cameraIds.includes(cameraId) &&
       r.status === '대여중' &&
       isOverlapping(startAt, endAt, r.startAt, r.endAt),
   )
@@ -325,7 +333,7 @@ function buildDummyData(): Reservation[] {
     {
       id: generateId(),
       teamId: '1조',
-      cameraId: 'A',
+      cameraIds: ['A'],
       accessories: ['tri-01', 'mic-1'],
       isBroadcast: false,
       startAt: nowLocalInput(1),
@@ -337,7 +345,7 @@ function buildDummyData(): Reservation[] {
     {
       id: generateId(),
       teamId: '2조',
-      cameraId: 'B',
+      cameraIds: ['B'],
       accessories: ['mic-1', 'bat-01'],
       isBroadcast: false,
       startAt: nowLocalInput(-6),
@@ -350,7 +358,7 @@ function buildDummyData(): Reservation[] {
     {
       id: generateId(),
       teamId: '3조',
-      cameraId: 'C',
+      cameraIds: ['C'],
       accessories: ['bat-02', 'sd-02'],
       isBroadcast: true,
       startAt: nowLocalInput(24),
@@ -362,12 +370,12 @@ function buildDummyData(): Reservation[] {
     {
       id: generateId(),
       teamId: '4조',
-      cameraId: 'A',
+      cameraIds: ['A', 'C'],
       accessories: ['sd-01'],
       isBroadcast: false,
       startAt: nowLocalInput(30),
       endAt: nowLocalInput(33),
-      purpose: '단편 영화 촬영 - 실내 씬',
+      purpose: '단편 영화 촬영 - 실내 씬 (카메라 2대 동시 사용)',
       status: '대여중',
       createdAt: new Date().toISOString(),
     },
@@ -382,7 +390,7 @@ function loadReservations(): Reservation[] {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(dummy))
       return dummy
     }
-    return JSON.parse(raw) as Reservation[]
+    return (JSON.parse(raw) as Reservation[]).map(normalizeReservation)
   } catch {
     const dummy = buildDummyData()
     localStorage.setItem(STORAGE_KEY, JSON.stringify(dummy))
@@ -876,13 +884,11 @@ function ReservationModal({
     useAppData()
 
   const [teamId, setTeamId] = useState<TeamId>(existing?.teamId ?? myTeam)
-  const [cameraId, setCameraId] = useState<CameraId>(
-    () =>
-      existing?.cameraId ??
-      (state.mode === 'create' ? state.presetCameraId : undefined) ??
-      cameras[0]?.id ??
-      '',
-  )
+  const [cameraIds, setCameraIds] = useState<CameraId[]>(() => {
+    if (existing?.cameraIds) return existing.cameraIds
+    if (state.mode === 'create' && state.presetCameraId) return [state.presetCameraId]
+    return []
+  })
   const [accessories, setAccessories] = useState<AccessoryId[]>(
     existing?.accessories ?? [],
   )
@@ -912,6 +918,12 @@ function ReservationModal({
     )
   }
 
+  function toggleCamera(id: CameraId) {
+    setCameraIds((prev) =>
+      prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id],
+    )
+  }
+
   function handleSubmit() {
     setError('')
 
@@ -927,26 +939,28 @@ function ReservationModal({
       setError('촬영 목적을 입력해주세요.')
       return
     }
-    if (!cameraId) {
-      setError('카메라를 선택해주세요.')
+    if (cameraIds.length === 0) {
+      setError('카메라를 1대 이상 선택해주세요.')
       return
     }
 
-    const conflict = findCameraConflict(
-      reservations,
-      cameraId,
-      startAt,
-      endAt,
-      excludeId,
-    )
-    if (conflict) {
-      const cam = getCameraById(cameraId)
-      setError(
-        `⚠ 예약 충돌: ${cam.label}(${cam.model})는 ${getTeamLabel(conflict.teamId)}이(가) ` +
-          `${formatDateTime(conflict.startAt)} ~ ${formatDateTime(conflict.endAt)} 동안 이미 예약했습니다. ` +
-          `해당 시간과 1분이라도 겹치는 예약은 등록할 수 없습니다.`,
+    for (const camId of cameraIds) {
+      const conflict = findCameraConflict(
+        reservations,
+        camId,
+        startAt,
+        endAt,
+        excludeId,
       )
-      return
+      if (conflict) {
+        const cam = getCameraById(camId)
+        setError(
+          `⚠ 예약 충돌: ${cam.label}(${cam.model})은(는) 해당 시간대에 이미 예약되어 있습니다. ` +
+            `${getTeamLabel(conflict.teamId)}이(가) ${formatDateTime(conflict.startAt)} ~ ${formatDateTime(conflict.endAt)} ` +
+            `동안 이미 예약했습니다. 해당 시간과 1분이라도 겹치는 예약은 등록할 수 없습니다.`,
+        )
+        return
+      }
     }
 
     for (const accessoryId of accessories) {
@@ -978,7 +992,7 @@ function ReservationModal({
     const reservation: Reservation = {
       id: existing?.id ?? generateId(),
       teamId,
-      cameraId,
+      cameraIds,
       accessories,
       isBroadcast,
       startAt,
@@ -1016,8 +1030,13 @@ function ReservationModal({
         </div>
 
         <div>
-          <label className="mb-2 block text-base font-bold text-slate-700">
-            카메라 선택
+          <label className="mb-2 flex items-center justify-between text-base font-bold text-slate-700">
+            <span>카메라 선택 (2대 이상 동시 예약 가능)</span>
+            {cameraIds.length > 0 && (
+              <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-bold text-[#3182f6]">
+                {cameraIds.length}대 선택
+              </span>
+            )}
           </label>
           {cameras.length === 0 ? (
             <p className="rounded-xl bg-amber-50 px-3 py-2.5 text-sm text-amber-700">
@@ -1025,23 +1044,35 @@ function ReservationModal({
             </p>
           ) : (
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-              {cameras.map((cam) => (
-                <button
-                  key={cam.id}
-                  onClick={() => setCameraId(cam.id)}
-                  className={`flex flex-col items-start rounded-xl border-2 px-3.5 py-3 text-left transition ${
-                    cameraId === cam.id
-                      ? 'border-[#3182f6] bg-blue-50'
-                      : 'border-slate-200 hover:border-slate-300'
-                  }`}
-                >
-                  <span className="flex items-center gap-1.5 text-base font-bold text-slate-800">
-                    <Video size={16} />
-                    {cam.label}
-                  </span>
-                  <span className="text-sm text-slate-500">{cam.model}</span>
-                </button>
-              ))}
+              {cameras.map((cam) => {
+                const checked = cameraIds.includes(cam.id)
+                return (
+                  <button
+                    key={cam.id}
+                    type="button"
+                    onClick={() => toggleCamera(cam.id)}
+                    className={`relative flex flex-col items-start rounded-xl border-2 px-3.5 py-3 text-left transition ${
+                      checked
+                        ? 'border-[#3182f6] bg-blue-50'
+                        : 'border-slate-200 hover:border-slate-300'
+                    }`}
+                  >
+                    {checked && (
+                      <span
+                        className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full text-white"
+                        style={{ backgroundColor: TOSS_BLUE }}
+                      >
+                        <Check size={12} />
+                      </span>
+                    )}
+                    <span className="flex items-center gap-1.5 text-base font-bold text-slate-800">
+                      <Video size={16} />
+                      {cam.label}
+                    </span>
+                    <span className="text-sm text-slate-500">{cam.model}</span>
+                  </button>
+                )
+              })}
             </div>
           )}
         </div>
@@ -1167,7 +1198,7 @@ function ReturnChecklistModal({
   const { getCameraById, getAccessoryById } = useAppData()
   const [batteryChecked, setBatteryChecked] = useState(false)
   const [cleanupChecked, setCleanupChecked] = useState(false)
-  const cam = getCameraById(reservation.cameraId)
+  const cams = reservation.cameraIds.map(getCameraById)
   const canConfirm = batteryChecked && cleanupChecked
 
   return (
@@ -1178,10 +1209,17 @@ function ReturnChecklistModal({
         </p>
 
         <div className="rounded-2xl bg-slate-50 px-4 py-3.5">
-          <p className="flex items-center gap-1.5 text-base font-bold text-slate-800">
-            <Video size={16} />
-            {cam.label} ({cam.model})
-          </p>
+          <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+            {cams.map((cam) => (
+              <p
+                key={cam.id}
+                className="flex items-center gap-1.5 text-base font-bold text-slate-800"
+              >
+                <Video size={16} />
+                {cam.label} ({cam.model})
+              </p>
+            ))}
+          </div>
           {reservation.accessories.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
               {reservation.accessories.map((id) => {
@@ -1281,7 +1319,7 @@ function ReservationDetailModal({
   onCancel: (id: string) => void
 }) {
   const { getCameraById, getAccessoryById, getTeamLabel } = useAppData()
-  const cam = getCameraById(reservation.cameraId)
+  const cams = reservation.cameraIds.map(getCameraById)
   const canManage = isAdmin || reservation.teamId === myTeam
 
   return (
@@ -1289,12 +1327,25 @@ function ReservationDetailModal({
       <div className="space-y-5">
         <div className="flex flex-wrap items-center gap-2">
           <TeamBadge teamId={reservation.teamId} />
-          <span className="flex items-center gap-1 text-base font-bold text-slate-800">
-            <Video size={15} />
-            {cam.label} ({cam.model})
-          </span>
           <StatusBadge status={reservation.status} />
           {reservation.isBroadcast && <BroadcastBadge />}
+        </div>
+
+        <div>
+          <p className="mb-1.5 text-base font-bold text-slate-700">
+            카메라 ({cams.length}대)
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {cams.map((cam) => (
+              <span
+                key={cam.id}
+                className="flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600"
+              >
+                <Video size={11} />
+                {cam.label} ({cam.model})
+              </span>
+            ))}
+          </div>
         </div>
 
         <div className="rounded-2xl bg-slate-50 px-4 py-3.5 text-base text-slate-600">
@@ -1619,7 +1670,7 @@ function CalendarView({
       reservations.filter(
         (r) =>
           r.status !== '취소됨' &&
-          (cameraFilter === '전체' || r.cameraId === cameraFilter),
+          (cameraFilter === '전체' || r.cameraIds.includes(cameraFilter)),
       ),
     [reservations, cameraFilter],
   )
@@ -1793,7 +1844,7 @@ function CalendarView({
                           {dayReservations.map((r) => {
                             const team = getTeam(r.teamId)
                             const teamLabel = getTeamLabel(r.teamId)
-                            const camLabel = getCameraById(r.cameraId).model
+                            const camLabel = formatCameraSummary(r.cameraIds.map(getCameraById))
                             return (
                               <button
                                 key={r.id}
@@ -1834,7 +1885,7 @@ function CalendarView({
                   {segments.map((seg) => {
                     const team = getTeam(seg.reservation.teamId)
                     const teamLabel = getTeamLabel(seg.reservation.teamId)
-                    const camLabel = getCameraById(seg.reservation.cameraId).model
+                    const camLabel = formatCameraSummary(seg.reservation.cameraIds.map(getCameraById))
                     return (
                       <button
                         key={seg.reservation.id}
@@ -1943,7 +1994,7 @@ function ReservationRow({
 }) {
   const { getCameraById, getAccessoryById } = useAppData()
   const team = getTeam(reservation.teamId)
-  const cam = getCameraById(reservation.cameraId)
+  const cams = reservation.cameraIds.map(getCameraById)
   const now = Date.now()
   const start = new Date(reservation.startAt).getTime()
   const end = new Date(reservation.endAt).getTime()
@@ -1966,7 +2017,7 @@ function ReservationRow({
         {showCamera && (
           <span className="flex items-center gap-1 text-sm font-bold text-slate-700">
             <Video size={13} />
-            {cam.label}
+            {formatCameraSummary(cams)}
           </span>
         )}
         <StatusBadge status={reservation.status} />
@@ -2030,7 +2081,7 @@ function EquipmentStatusView({
         )}
         {cameras.map((cam) => {
           const history = reservations
-            .filter((r) => r.cameraId === cam.id && r.status !== '취소됨')
+            .filter((r) => r.cameraIds.includes(cam.id) && r.status !== '취소됨')
             .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())
           const inUse = history.some(
             (r) =>
@@ -2704,18 +2755,20 @@ export default function App() {
 
   const availableCameraCount = useMemo(() => {
     const now = Date.now()
-    const cameraIds = new Set(cameras.map((c) => c.id))
-    const busy = new Set(
-      reservations
-        .filter(
-          (r) =>
-            r.status === '대여중' &&
-            cameraIds.has(r.cameraId) &&
-            new Date(r.startAt).getTime() <= now &&
-            new Date(r.endAt).getTime() >= now,
-        )
-        .map((r) => r.cameraId),
-    )
+    const knownCameraIds = new Set(cameras.map((c) => c.id))
+    const busy = new Set<string>()
+    for (const r of reservations) {
+      if (
+        r.status !== '대여중' ||
+        new Date(r.startAt).getTime() > now ||
+        new Date(r.endAt).getTime() < now
+      ) {
+        continue
+      }
+      for (const camId of r.cameraIds) {
+        if (knownCameraIds.has(camId)) busy.add(camId)
+      }
+    }
     return cameras.length - busy.size
   }, [reservations, cameras])
 

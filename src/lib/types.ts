@@ -22,7 +22,7 @@ export interface AccessoryItem {
 export interface Reservation {
   id: string
   teamId: TeamId
-  cameraId: CameraId
+  cameraIds: CameraId[]
   accessories: AccessoryId[]
   isBroadcast: boolean
   startAt: string
@@ -31,6 +31,32 @@ export interface Reservation {
   status: ReservationStatus
   createdAt: string
   returnedAt?: string
+}
+
+// 과거 버전(카메라 1대만 예약 가능)은 localStorage에 단일 문자열 cameraId로 저장했다.
+// 이미 저장된 예약 데이터를 잃지 않도록 로드 시점에 배열 형태(cameraIds)로 정규화한다.
+export function normalizeReservation(
+  raw: Reservation & { cameraId?: CameraId },
+): Reservation {
+  const cameraIds =
+    Array.isArray(raw.cameraIds) && raw.cameraIds.length > 0
+      ? raw.cameraIds
+      : raw.cameraId
+        ? [raw.cameraId]
+        : []
+  return {
+    id: raw.id,
+    teamId: raw.teamId,
+    cameraIds,
+    accessories: raw.accessories ?? [],
+    isBroadcast: raw.isBroadcast,
+    startAt: raw.startAt,
+    endAt: raw.endAt,
+    purpose: raw.purpose,
+    status: raw.status,
+    createdAt: raw.createdAt,
+    returnedAt: raw.returnedAt,
+  }
 }
 
 export const TEAM_IDS: TeamId[] = ['1조', '2조', '3조', '4조', '5조']

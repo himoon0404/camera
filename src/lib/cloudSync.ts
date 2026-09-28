@@ -29,11 +29,32 @@ interface ReservationRow {
   returned_at: string | null
 }
 
+// 카메라 다중 선택 기능 이전에는 camera_id 컬럼에 단일 문자열만 저장했다.
+// DB 스키마 변경 없이 하위 호환을 유지하기 위해 카메라가 2대 이상이면 이 컬럼에
+// JSON 배열 문자열을 저장하고, 1대뿐이면 기존과 완전히 동일하게 평범한 문자열로 저장한다.
+function encodeCameraIds(cameraIds: string[]): string {
+  if (cameraIds.length <= 1) return cameraIds[0] ?? ''
+  return JSON.stringify(cameraIds)
+}
+
+function decodeCameraIds(value: string): string[] {
+  if (!value) return []
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (Array.isArray(parsed)) {
+      return parsed.filter((v): v is string => typeof v === 'string')
+    }
+  } catch {
+    // JSON으로 파싱되지 않으면 과거 방식대로 저장된 단일 카메라 id 문자열이다.
+  }
+  return [value]
+}
+
 function rowToReservation(row: ReservationRow): Reservation {
   return {
     id: row.id,
     teamId: row.team_id,
-    cameraId: row.camera_id,
+    cameraIds: decodeCameraIds(row.camera_id),
     accessories: row.accessories ?? [],
     isBroadcast: row.is_broadcast,
     startAt: row.start_at,
@@ -49,7 +70,7 @@ function reservationToRow(r: Reservation): ReservationRow {
   return {
     id: r.id,
     team_id: r.teamId,
-    camera_id: r.cameraId,
+    camera_id: encodeCameraIds(r.cameraIds),
     accessories: r.accessories,
     is_broadcast: r.isBroadcast,
     start_at: r.startAt,
