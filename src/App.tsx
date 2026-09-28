@@ -1046,16 +1046,28 @@ function ReservationModal({
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
               {cameras.map((cam) => {
                 const checked = cameraIds.includes(cam.id)
+                const conflict = hasValidRange
+                  ? findCameraConflict(reservations, cam.id, startAt, endAt, excludeId)
+                  : undefined
+                const disabled = !!conflict && !checked
                 return (
                   <button
                     key={cam.id}
                     type="button"
+                    disabled={disabled}
                     onClick={() => toggleCamera(cam.id)}
                     className={`relative flex flex-col items-start rounded-xl border-2 px-3.5 py-3 text-left transition ${
-                      checked
-                        ? 'border-[#3182f6] bg-blue-50'
-                        : 'border-slate-200 hover:border-slate-300'
+                      disabled
+                        ? 'cursor-not-allowed border-slate-200 bg-slate-50 opacity-50'
+                        : checked
+                          ? 'border-[#3182f6] bg-blue-50'
+                          : 'border-slate-200 hover:border-slate-300'
                     }`}
+                    title={
+                      disabled && conflict
+                        ? `${getTeamLabel(conflict.teamId)} 예약중 (${formatDateTime(conflict.startAt)} ~ ${formatDateTime(conflict.endAt)})`
+                        : undefined
+                    }
                   >
                     {checked && (
                       <span
@@ -1065,11 +1077,21 @@ function ReservationModal({
                         <Check size={12} />
                       </span>
                     )}
-                    <span className="flex items-center gap-1.5 text-base font-bold text-slate-800">
+                    <span className="flex w-full items-center gap-1.5 text-base font-bold text-slate-800">
                       <Video size={16} />
                       {cam.label}
+                      {disabled && conflict && (
+                        <span className="ml-auto shrink-0 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-bold text-red-500">
+                          예약중
+                        </span>
+                      )}
                     </span>
                     <span className="text-sm text-slate-500">{cam.model}</span>
+                    {disabled && conflict && (
+                      <span className="mt-0.5 text-[10px] font-semibold text-red-400">
+                        {getTeamLabel(conflict.teamId)} 예약중
+                      </span>
+                    )}
                   </button>
                 )
               })}
