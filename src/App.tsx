@@ -295,6 +295,14 @@ function formatTimeOnly(value: string): string {
   return idx >= 0 ? value.slice(idx + 1, idx + 6) : value
 }
 
+// 예약 폼에서 선택 불가 장비 위에 띄우는 "[예약중 13:00~16:00 (O조)]" 형태의 안내 뱃지 문구.
+function formatConflictBadge(
+  conflict: Reservation,
+  getTeamLabel: (id: TeamId) => string,
+): string {
+  return `예약중 ${formatTimeOnly(conflict.startAt)}~${formatTimeOnly(conflict.endAt)} (${getTeamLabel(conflict.teamId)})`
+}
+
 // Date 객체를 datetime-local input과 동일한 "yyyy-MM-ddTHH:mm" 로컬 문자열로 변환
 function toLocalInputValue(d: Date): string {
   const copy = new Date(d)
@@ -321,7 +329,7 @@ function combineDateTime(date: string, hour: string, minute: string): string {
 }
 
 const HOUR_OPTIONS = Array.from({ length: 24 }, (_, h) => `${h}`.padStart(2, '0'))
-const MINUTE_OPTIONS = Array.from({ length: 12 }, (_, m) => `${m * 5}`.padStart(2, '0'))
+const MINUTE_OPTIONS = Array.from({ length: 6 }, (_, m) => `${m * 10}`.padStart(2, '0'))
 const QUICK_DURATION_HOURS = [1, 2, 3]
 
 // ----------------------------------------------------------------------------------
@@ -767,31 +775,28 @@ function AccessoryPickerAccordion({
                 const conflict = hasValidRange
                   ? findAccessoryConflict(reservations, item.id, startAt, endAt, excludeId)
                   : undefined
-                const disabled = !!conflict && !checked
+                const disabled = !!conflict
                 return (
                   <button
                     key={item.id}
                     type="button"
                     disabled={disabled}
-                    onClick={() => onToggle(item.id)}
+                    aria-disabled={disabled}
+                    onClick={() => !disabled && onToggle(item.id)}
                     className={`inline-flex items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm font-bold transition ${
                       disabled
-                        ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-300'
+                        ? 'pointer-events-none cursor-not-allowed border-slate-200 bg-slate-50 text-slate-300 opacity-40'
                         : checked
                           ? 'border-[#3182f6] bg-[#3182f6] text-white'
                           : 'border-slate-200 text-slate-600 hover:border-slate-300'
                     }`}
-                    title={
-                      disabled && conflict
-                        ? `${getTeamLabel(conflict.teamId)} 예약중 (${formatDateTime(conflict.startAt)} ~ ${formatDateTime(conflict.endAt)})`
-                        : undefined
-                    }
+                    title={disabled && conflict ? formatConflictBadge(conflict, getTeamLabel) : undefined}
                   >
                     <Tag size={12} />
                     {item.label}
                     {disabled && conflict && (
                       <span className="text-[10px] font-semibold text-red-400">
-                        {getTeamLabel(conflict.teamId)} 예약중
+                        [{formatConflictBadge(conflict, getTeamLabel)}]
                       </span>
                     )}
                   </button>
@@ -912,6 +917,25 @@ function ReservationModal({
   const hasValidRange =
     !!startAt && !!endAt && new Date(startAt).getTime() < new Date(endAt).getTime()
 
+  const broadcastConflict = hasValidRange
+    ? findBroadcastConflict(reservations, startAt, endAt, excludeId)
+    : undefined
+
+  // 날짜/시간이 바뀌어 이미 선택해 둔 장비가 '예약 불가' 상태로 바뀌면 즉시 선택을 해제한다.
+  useEffect(() => {
+    if (!hasValidRange) return
+    setCameraIds((prev) =>
+      prev.filter((id) => !findCameraConflict(reservations, id, startAt, endAt, excludeId)),
+    )
+    setAccessories((prev) =>
+      prev.filter((id) => !findAccessoryConflict(reservations, id, startAt, endAt, excludeId)),
+    )
+    setIsBroadcast((prev) =>
+      prev && findBroadcastConflict(reservations, startAt, endAt, excludeId) ? false : prev,
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startAt, endAt, reservations, excludeId, hasValidRange])
+
   function toggleAccessory(item: AccessoryId) {
     setAccessories((prev) =>
       prev.includes(item) ? prev.filter((a) => a !== item) : [...prev, item],
@@ -1030,8 +1054,40 @@ function ReservationModal({
         </div>
 
         <div>
+          <label className="mb-2 block text-base font-bold text-slate-700">
+            1단계 · 날짜 및 시간 선택
+          </label>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <DateTimePicker label="시작 일시" value={startAt} onChange={setStartAt} />
+            <DateTimePicker label="종료 일시" value={endAt} onChange={setEndAt} />
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="text-sm font-bold text-slate-500">빠른 선택</span>
+            {QUICK_DURATION_HOURS.map((hours) => (
+              <button
+                key={hours}
+                type="button"
+                onClick={() => {
+                  const start = new Date(startAt)
+                  if (Number.isNaN(start.getTime())) return
+                  setEndAt(toLocalInputValue(new Date(start.getTime() + hours * 60 * 60 * 1000)))
+                }}
+                className="rounded-full border border-slate-200 px-4 py-2 text-sm font-bold text-slate-600 transition hover:border-[#3182f6] hover:text-[#3182f6]"
+              >
+                +{hours}시간
+              </button>
+            ))}
+          </div>
+          {!hasValidRange && (
+            <p className="mt-2 text-sm font-medium text-red-500">
+              종료 일시는 시작 일시보다 이후여야 장비 가용 여부를 계산할 수 있습니다.
+            </p>
+          )}
+        </div>
+
+        <div>
           <label className="mb-2 flex items-center justify-between text-base font-bold text-slate-700">
-            <span>카메라 선택 (2대 이상 동시 예약 가능)</span>
+            <span>2단계 · 카메라 선택 (2대 이상 동시 예약 가능)</span>
             {cameraIds.length > 0 && (
               <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-bold text-[#3182f6]">
                 {cameraIds.length}대 선택
@@ -1049,25 +1105,22 @@ function ReservationModal({
                 const conflict = hasValidRange
                   ? findCameraConflict(reservations, cam.id, startAt, endAt, excludeId)
                   : undefined
-                const disabled = !!conflict && !checked
+                const disabled = !!conflict
                 return (
                   <button
                     key={cam.id}
                     type="button"
                     disabled={disabled}
-                    onClick={() => toggleCamera(cam.id)}
+                    aria-disabled={disabled}
+                    onClick={() => !disabled && toggleCamera(cam.id)}
                     className={`relative flex flex-col items-start rounded-xl border-2 px-3.5 py-3 text-left transition ${
                       disabled
-                        ? 'cursor-not-allowed border-slate-200 bg-slate-50 opacity-50'
+                        ? 'pointer-events-none cursor-not-allowed border-slate-200 bg-slate-50 opacity-30'
                         : checked
                           ? 'border-[#3182f6] bg-blue-50'
                           : 'border-slate-200 hover:border-slate-300'
                     }`}
-                    title={
-                      disabled && conflict
-                        ? `${getTeamLabel(conflict.teamId)} 예약중 (${formatDateTime(conflict.startAt)} ~ ${formatDateTime(conflict.endAt)})`
-                        : undefined
-                    }
+                    title={disabled && conflict ? formatConflictBadge(conflict, getTeamLabel) : undefined}
                   >
                     {checked && (
                       <span
@@ -1080,16 +1133,11 @@ function ReservationModal({
                     <span className="flex w-full items-center gap-1.5 text-base font-bold text-slate-800">
                       <Video size={16} />
                       {cam.label}
-                      {disabled && conflict && (
-                        <span className="ml-auto shrink-0 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-bold text-red-500">
-                          예약중
-                        </span>
-                      )}
                     </span>
                     <span className="text-sm text-slate-500">{cam.model}</span>
                     {disabled && conflict && (
-                      <span className="mt-0.5 text-[10px] font-semibold text-red-400">
-                        {getTeamLabel(conflict.teamId)} 예약중
+                      <span className="mt-0.5 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-bold text-red-500">
+                        [{formatConflictBadge(conflict, getTeamLabel)}]
                       </span>
                     )}
                   </button>
@@ -1101,7 +1149,7 @@ function ReservationModal({
 
         <div>
           <label className="mb-2 block text-base font-bold text-slate-700">
-            부속 기자재 (품목별 아코디언 · 라벨 번호 단위 다중 선택)
+            3단계 · 부가 기자재 선택 (품목별 아코디언 · 라벨 번호 단위 다중 선택)
           </label>
           <AccessoryPickerAccordion
             availableAccessories={availableAccessories}
@@ -1117,52 +1165,39 @@ function ReservationModal({
 
         <div>
           <label
-            className={`flex cursor-pointer items-start gap-2.5 rounded-xl border px-4 py-3.5 transition ${
-              isBroadcast
-                ? 'border-violet-400 bg-violet-50'
-                : 'border-slate-200 hover:border-slate-300'
+            className={`flex items-start gap-2.5 rounded-xl border px-4 py-3.5 transition ${
+              broadcastConflict
+                ? 'pointer-events-none cursor-not-allowed border-slate-200 bg-slate-50 opacity-40'
+                : isBroadcast
+                  ? 'cursor-pointer border-violet-400 bg-violet-50'
+                  : 'cursor-pointer border-slate-200 hover:border-slate-300'
             }`}
           >
             <input
               type="checkbox"
               checked={isBroadcast}
+              disabled={!!broadcastConflict}
+              aria-disabled={!!broadcastConflict}
               onChange={(e) => setIsBroadcast(e.target.checked)}
               className="mt-0.5 h-4 w-4 rounded accent-violet-600"
             />
             <span>
               <span className="flex items-center gap-1.5 text-base font-bold text-slate-700">
                 <Radio size={15} className="text-violet-600" />
-                방송국 사용
+                4단계 · 방송국 사용
               </span>
-              <span className="mt-0.5 block text-sm text-slate-400">
-                방송국은 동시간대에 1개 조만 단독 사용할 수 있습니다. 야외·일반
-                촬영은 체크하지 않아도 됩니다.
-              </span>
+              {broadcastConflict ? (
+                <span className="mt-0.5 block text-sm font-semibold text-red-500">
+                  해당 시간 방송실 예약 마감 · [{formatConflictBadge(broadcastConflict, getTeamLabel)}]
+                </span>
+              ) : (
+                <span className="mt-0.5 block text-sm text-slate-400">
+                  방송국은 동시간대에 1개 조만 단독 사용할 수 있습니다. 야외·일반
+                  촬영은 체크하지 않아도 됩니다.
+                </span>
+              )}
             </span>
           </label>
-        </div>
-
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <DateTimePicker label="시작 일시" value={startAt} onChange={setStartAt} />
-          <DateTimePicker label="종료 일시" value={endAt} onChange={setEndAt} />
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm font-bold text-slate-500">빠른 선택</span>
-          {QUICK_DURATION_HOURS.map((hours) => (
-            <button
-              key={hours}
-              type="button"
-              onClick={() => {
-                const start = new Date(startAt)
-                if (Number.isNaN(start.getTime())) return
-                setEndAt(toLocalInputValue(new Date(start.getTime() + hours * 60 * 60 * 1000)))
-              }}
-              className="rounded-full border border-slate-200 px-4 py-2 text-sm font-bold text-slate-600 transition hover:border-[#3182f6] hover:text-[#3182f6]"
-            >
-              +{hours}시간
-            </button>
-          ))}
         </div>
 
         <div>

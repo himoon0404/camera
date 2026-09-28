@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Communication
+
+When summarizing what was changed/added in a session (e.g. end-of-task summaries), write the summary in Korean.
+
 ## Commands
 
 ```bash
