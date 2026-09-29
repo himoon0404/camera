@@ -28,6 +28,7 @@ import {
   ShieldCheck,
   Cloud,
   CloudOff,
+  Download,
 } from 'lucide-react'
 import {
   DEFAULT_ACCESSORIES,
@@ -182,8 +183,103 @@ function generateId(): string {
   return `res-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
+const RETURNED_HIDE_AFTER_MS = 7 * 24 * 60 * 60 * 1000
+
+// 반납 완료 후 7일(1주일)이 지난 예약은 화면(달력/장비별/조별 현황) 목록에서만 숨기고
+// Supabase/localStorage 데이터는 삭제하지 않고 그대로 보존한다. CSV 전체 내역 추출 시에는 이 필터를 거치지 않는다.
+function isExpiredReturn(r: Reservation, now: number): boolean {
+  return r.status === '반납완료' && now - new Date(r.endAt).getTime() >= RETURNED_HIDE_AFTER_MS
+}
+
 function formatAccessory(item: AccessoryItem): string {
   return `${item.category} (${item.label})`
+}
+
+// ----------------------------------------------------------------------------------
+// 전체 예약 내역 CSV(엑셀) 다운로드 - 화면 숨김 필터와 무관하게 누적된 모든 예약을 포함한다.
+// ----------------------------------------------------------------------------------
+
+const RESERVATION_STATUS_CSV_LABEL: Record<ReservationStatus, string> = {
+  대여중: '이용중',
+  반납완료: '반납완료',
+  취소됨: '취소됨',
+}
+
+function formatCsvDateTime(value?: string): string {
+  if (!value) return ''
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return value
+  const y = d.getFullYear()
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  const hh = `${d.getHours()}`.padStart(2, '0')
+  const mm = `${d.getMinutes()}`.padStart(2, '0')
+  return `${y}-${m}-${day} ${hh}:${mm}`
+}
+
+function toCsvField(value: string): string {
+  const escaped = value.replace(/"/g, '""')
+  return /[",\r\n]/.test(value) ? `"${escaped}"` : escaped
+}
+
+function downloadReservationsCsv(
+  reservations: Reservation[],
+  getTeamLabel: (id: TeamId) => string,
+  getCameraById: (id: string) => CameraInfo,
+  getAccessoryById: (id: AccessoryId) => AccessoryItem,
+) {
+  const headers = [
+    '예약 ID',
+    '조/구분',
+    '예약자명',
+    '대여 시작일시',
+    '반납(종료)일시',
+    '카메라 목록',
+    '부속 기자재 목록',
+    '방송실 사용 여부',
+    '진행 상태',
+    '실제 반납일시',
+  ]
+
+  const rows = reservations.map((r) => {
+    const teamLabel = getTeamLabel(r.teamId)
+    const cameraSummary = r.cameraIds
+      .map((id) => {
+        const cam = getCameraById(id)
+        return `${cam.label}(${cam.model})`
+      })
+      .join(', ')
+    const accessorySummary = r.accessories.map((id) => formatAccessory(getAccessoryById(id))).join(', ')
+    return [
+      r.id,
+      teamLabel,
+      teamLabel,
+      formatCsvDateTime(r.startAt),
+      formatCsvDateTime(r.endAt),
+      cameraSummary,
+      accessorySummary,
+      r.isBroadcast ? 'Y' : 'N',
+      RESERVATION_STATUS_CSV_LABEL[r.status] ?? r.status,
+      formatCsvDateTime(r.returnedAt),
+    ]
+  })
+
+  const csvBody = [headers, ...rows].map((row) => row.map(toCsvField).join(',')).join('\r\n')
+  // Excel에서 한글이 깨지지 않도록 UTF-8 BOM을 붙인다.
+  const blob = new Blob(['﻿' + csvBody], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const today = new Date()
+  const y = today.getFullYear()
+  const m = `${today.getMonth() + 1}`.padStart(2, '0')
+  const d = `${today.getDate()}`.padStart(2, '0')
+
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `장비예약_전체내역_${y}${m}${d}.csv`
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
 }
 
 // 카메라 2대 이상 예약 시 달력/목록에 깔끔하게 요약해서 보여주기 위한 포맷터.
@@ -2491,15 +2587,20 @@ function PasswordModal({
 // ----------------------------------------------------------------------------------
 
 function AdminPanel({
+  reservations,
   onClose,
   onLogout,
 }: {
+  reservations: Reservation[]
   onClose: () => void
   onLogout: () => void
 }) {
   const {
     cameras,
     accessories,
+    getTeamLabel,
+    getCameraById,
+    getAccessoryById,
     addCamera,
     removeCamera,
     addAccessory,
@@ -2569,6 +2670,31 @@ function AdminPanel({
             <LogOut size={14} />
             로그아웃
           </button>
+        </div>
+
+        <div>
+          <h3 className="mb-2.5 flex items-center gap-1.5 text-lg font-extrabold text-slate-700">
+            <Download size={17} />
+            예약 내역 다운로드
+          </h3>
+          <div className="rounded-xl border border-slate-200 px-4 py-3.5">
+            <p className="mb-3 text-sm text-slate-500">
+              화면에서 반납 후 1주일이 지나 숨겨진 과거 기록까지 포함해, 시스템에 누적된 모든
+              예약 내역을 CSV(엑셀) 파일로 내려받습니다.
+            </p>
+            <button
+              onClick={() =>
+                downloadReservationsCsv(reservations, getTeamLabel, getCameraById, getAccessoryById)
+              }
+              className={PRIMARY_BTN}
+              style={{ backgroundColor: TOSS_BLUE }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = TOSS_BLUE_HOVER)}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = TOSS_BLUE)}
+            >
+              <Download size={16} />
+              예약 내역 엑셀(CSV) 다운로드
+            </button>
+          </div>
         </div>
 
         <div>
@@ -2810,6 +2936,12 @@ export default function App() {
     }
   }, [])
 
+  // 반납 완료 후 1주일 지난 예약은 화면 목록에서만 숨긴다 (DB/localStorage는 그대로 보존, CSV 추출도 영향 없음).
+  const visibleReservations = useMemo(() => {
+    const now = Date.now()
+    return reservations.filter((r) => !isExpiredReturn(r, now))
+  }, [reservations])
+
   const availableCameraCount = useMemo(() => {
     const now = Date.now()
     const knownCameraIds = new Set(cameras.map((c) => c.id))
@@ -3043,20 +3175,20 @@ export default function App() {
 
           {tab === 'calendar' && (
             <CalendarView
-              reservations={reservations}
+              reservations={visibleReservations}
               onDayClick={(dateKey) => openNewReservation(dateKey)}
               onChipClick={(r) => setDetailTarget(r)}
             />
           )}
           {tab === 'equipment' && (
             <EquipmentStatusView
-              reservations={reservations}
+              reservations={visibleReservations}
               onSelect={(r) => setDetailTarget(r)}
             />
           )}
           {tab === 'team' && (
             <TeamStatusView
-              reservations={reservations}
+              reservations={visibleReservations}
               onSelect={(r) => setDetailTarget(r)}
             />
           )}
@@ -3131,6 +3263,7 @@ export default function App() {
 
         {showAdminPanel && (
           <AdminPanel
+            reservations={reservations}
             onClose={() => setShowAdminPanel(false)}
             onLogout={handleAdminLogout}
           />
