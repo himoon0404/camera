@@ -79,6 +79,10 @@ type ReservationModalState =
 
 type CloudStatus = 'checking' | 'online' | 'offline'
 
+// '내 조' 선택값 - 실제 조(TeamId) 외에 '단순 조회(뷰어)' 모드를 더한 UI 전용 값.
+// 예약 데이터(Reservation.teamId)는 항상 실제 TeamId만 가지며 'viewer'가 저장되는 일은 없다.
+type MyTeamSelection = TeamId | 'viewer'
+
 // ----------------------------------------------------------------------------------
 // 상수 데이터
 // ----------------------------------------------------------------------------------
@@ -547,9 +551,10 @@ function loadAccessories(): AccessoryItem[] {
   }
 }
 
-function loadMyTeam(): TeamId {
+function loadMyTeam(): MyTeamSelection {
   try {
     const raw = localStorage.getItem(MY_TEAM_STORAGE_KEY)
+    if (raw === 'viewer') return 'viewer'
     if (raw && TEAMS.some((t) => t.id === raw)) return raw as TeamId
     localStorage.setItem(MY_TEAM_STORAGE_KEY, '1조')
     return '1조'
@@ -566,7 +571,7 @@ interface AppDataContextValue {
   teamNames: Record<TeamId, string>
   cameras: CameraInfo[]
   accessories: AccessoryItem[]
-  myTeam: TeamId
+  myTeam: MyTeamSelection
   isAdmin: boolean
   getTeamLabel: (id: TeamId) => string
   getCameraById: (id: string) => CameraInfo
@@ -758,13 +763,14 @@ function MyTeamSwitcher({
   myTeam,
   onChange,
 }: {
-  myTeam: TeamId
-  onChange: (id: TeamId) => void
+  myTeam: MyTeamSelection
+  onChange: (id: MyTeamSelection) => void
 }) {
   const { getTeamLabel } = useAppData()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
-  const team = getTeam(myTeam)
+  const isViewer = myTeam === 'viewer'
+  const team = isViewer ? null : getTeam(myTeam)
 
   useEffect(() => {
     function handleOutside(e: MouseEvent) {
@@ -778,14 +784,35 @@ function MyTeamSwitcher({
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen((v) => !v)}
-        className={`flex h-12 items-center gap-2 rounded-xl border px-4 text-base font-bold transition ${team.softBg} ${team.borderColor} ${team.textColor}`}
+        className={`flex h-12 items-center gap-2 rounded-xl border px-4 text-base font-bold transition ${
+          team ? `${team.softBg} ${team.borderColor} ${team.textColor}` : 'border-slate-200 bg-slate-50 text-slate-500'
+        }`}
       >
-        <span className={`h-2.5 w-2.5 rounded-full ${team.color}`} />
-        내 조: {getTeamLabel(myTeam)}
+        {team ? (
+          <>
+            <span className={`h-2.5 w-2.5 rounded-full ${team.color}`} />
+            내 조: {getTeamLabel(myTeam as TeamId)}
+          </>
+        ) : (
+          <>👀 단순 조회 (뷰어)</>
+        )}
         <ChevronDown size={16} className={`transition ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
-        <div className="absolute right-0 z-30 mt-2 w-48 overflow-hidden rounded-2xl bg-white p-1.5 shadow-xl ring-1 ring-slate-900/5">
+        <div className="absolute right-0 z-30 mt-2 w-52 overflow-hidden rounded-2xl bg-white p-1.5 shadow-xl ring-1 ring-slate-900/5">
+          <button
+            onClick={() => {
+              onChange('viewer')
+              setOpen(false)
+            }}
+            className={`flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-base font-semibold transition hover:bg-slate-50 ${
+              isViewer ? 'text-slate-700' : 'text-slate-500'
+            }`}
+          >
+            👀 단순 조회 (뷰어)
+            {isViewer && <Check size={16} className="ml-auto" />}
+          </button>
+          <div className="my-1 h-px bg-slate-100" />
           {TEAMS.map((t) => (
             <button
               key={t.id}
@@ -974,7 +1001,7 @@ function ReservationModal({
   onSubmit,
 }: {
   reservations: Reservation[]
-  myTeam: TeamId
+  myTeam: MyTeamSelection
   state: ReservationModalState
   onClose: () => void
   onSubmit: (reservation: Reservation) => void
@@ -984,7 +1011,9 @@ function ReservationModal({
   const { cameras, accessories: availableAccessories, getTeamLabel, getCameraById } =
     useAppData()
 
-  const [teamId, setTeamId] = useState<TeamId>(existing?.teamId ?? myTeam)
+  const [teamId, setTeamId] = useState<TeamId>(
+    existing?.teamId ?? (myTeam === 'viewer' ? TEAMS[0].id : myTeam),
+  )
   const [cameraIds, setCameraIds] = useState<CameraId[]>(() => {
     if (existing?.cameraIds) return existing.cameraIds
     if (state.mode === 'create' && state.presetCameraId) return [state.presetCameraId]
@@ -1464,7 +1493,7 @@ function ReservationDetailModal({
   onCancel,
 }: {
   reservation: Reservation
-  myTeam: TeamId
+  myTeam: MyTeamSelection
   isAdmin: boolean
   onClose: () => void
   onEdit: (r: Reservation) => void
@@ -1805,6 +1834,7 @@ function CalendarView({
     () => new Date(today.getFullYear(), today.getMonth(), 1),
   )
   const [cameraFilter, setCameraFilter] = useState<'전체' | CameraId>('전체')
+  const [teamFilter, setTeamFilter] = useState<'전체' | TeamId>('전체')
   const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null)
 
   const year = cursor.getFullYear()
@@ -1823,9 +1853,10 @@ function CalendarView({
       reservations.filter(
         (r) =>
           r.status !== '취소됨' &&
-          (cameraFilter === '전체' || r.cameraIds.includes(cameraFilter)),
+          (cameraFilter === '전체' || r.cameraIds.includes(cameraFilter)) &&
+          (teamFilter === '전체' || r.teamId === teamFilter),
       ),
-    [reservations, cameraFilter],
+    [reservations, cameraFilter, teamFilter],
   )
 
   function goToPrevMonth() {
@@ -1859,55 +1890,84 @@ function CalendarView({
 
   return (
     <div className="space-y-4">
-      <div className={`flex flex-wrap items-center gap-3 p-3.5 ${CARD}`}>
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={goToPrevMonth}
-            className="rounded-xl p-2 text-slate-500 hover:bg-slate-100"
-            aria-label="이전 달"
-          >
-            <ChevronLeft size={20} />
-          </button>
-          <span className="w-32 text-center text-lg font-extrabold text-slate-800">
-            {year}년 {month + 1}월
-          </span>
-          <button
-            onClick={goToNextMonth}
-            className="rounded-xl p-2 text-slate-500 hover:bg-slate-100"
-            aria-label="다음 달"
-          >
-            <ChevronRight size={20} />
-          </button>
-          <button
-            onClick={goToToday}
-            className="rounded-xl border border-slate-200 px-3 py-1.5 text-sm font-bold text-slate-600 hover:bg-slate-50"
-          >
-            오늘
-          </button>
-        </div>
-
-        <div className="ml-auto flex flex-wrap gap-1.5">
-          <button
-            onClick={() => setCameraFilter('전체')}
-            className={`rounded-full border px-3.5 py-1.5 text-sm font-bold transition ${
-              cameraFilter === '전체'
-                ? 'border-[#3182f6] bg-[#3182f6] text-white'
-                : 'border-slate-200 text-slate-500 hover:border-slate-300'
-            }`}
-          >
-            전체 보기
-          </button>
-          {cameras.map((cam) => (
+      <div className={`space-y-2.5 p-3.5 ${CARD}`}>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-1.5">
             <button
-              key={cam.id}
-              onClick={() => setCameraFilter(cam.id)}
+              onClick={goToPrevMonth}
+              className="rounded-xl p-2 text-slate-500 hover:bg-slate-100"
+              aria-label="이전 달"
+            >
+              <ChevronLeft size={20} />
+            </button>
+            <span className="w-32 text-center text-lg font-extrabold text-slate-800">
+              {year}년 {month + 1}월
+            </span>
+            <button
+              onClick={goToNextMonth}
+              className="rounded-xl p-2 text-slate-500 hover:bg-slate-100"
+              aria-label="다음 달"
+            >
+              <ChevronRight size={20} />
+            </button>
+            <button
+              onClick={goToToday}
+              className="rounded-xl border border-slate-200 px-3 py-1.5 text-sm font-bold text-slate-600 hover:bg-slate-50"
+            >
+              오늘
+            </button>
+          </div>
+
+          <div className="ml-auto flex flex-wrap gap-1.5">
+            <button
+              onClick={() => setCameraFilter('전체')}
               className={`rounded-full border px-3.5 py-1.5 text-sm font-bold transition ${
-                cameraFilter === cam.id
+                cameraFilter === '전체'
                   ? 'border-[#3182f6] bg-[#3182f6] text-white'
                   : 'border-slate-200 text-slate-500 hover:border-slate-300'
               }`}
             >
-              {cam.label}
+              전체 보기
+            </button>
+            {cameras.map((cam) => (
+              <button
+                key={cam.id}
+                onClick={() => setCameraFilter(cam.id)}
+                className={`rounded-full border px-3.5 py-1.5 text-sm font-bold transition ${
+                  cameraFilter === cam.id
+                    ? 'border-[#3182f6] bg-[#3182f6] text-white'
+                    : 'border-slate-200 text-slate-500 hover:border-slate-300'
+                }`}
+              >
+                {cam.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5 border-t border-slate-100 pt-2.5">
+          <span className="mr-0.5 text-sm font-bold text-slate-400">조별 필터</span>
+          <button
+            onClick={() => setTeamFilter('전체')}
+            className={`rounded-full border px-3.5 py-1.5 text-sm font-bold transition ${
+              teamFilter === '전체'
+                ? 'border-[#3182f6] bg-[#3182f6] text-white'
+                : 'border-slate-200 text-slate-500 hover:border-slate-300'
+            }`}
+          >
+            전체
+          </button>
+          {TEAMS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTeamFilter(t.id)}
+              className={`rounded-full border px-3.5 py-1.5 text-sm font-bold transition ${
+                teamFilter === t.id
+                  ? 'border-[#3182f6] bg-[#3182f6] text-white'
+                  : 'border-slate-200 text-slate-500 hover:border-slate-300'
+              }`}
+            >
+              {getTeamLabel(t.id)}
             </button>
           ))}
         </div>
@@ -2827,7 +2887,7 @@ export default function App() {
   const [teamNames, setTeamNames] = useState<Record<TeamId, string>>(loadTeamNames)
   const [cameras, setCameras] = useState<CameraInfo[]>(loadCameras)
   const [accessories, setAccessories] = useState<AccessoryItem[]>(loadAccessories)
-  const [myTeam, setMyTeam] = useState<TeamId>(loadMyTeam)
+  const [myTeam, setMyTeam] = useState<MyTeamSelection>(loadMyTeam)
   const [cloudStatus, setCloudStatus] = useState<CloudStatus>(
     isSupabaseConfigured ? 'checking' : 'offline',
   )
